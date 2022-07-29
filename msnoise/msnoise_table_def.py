@@ -93,6 +93,10 @@ def declare_tables(prefix=None):
         :param mwcs_wlen: Window length (in seconds) to perform MWCS
         :type mwcs_step: float
         :param mwcs_step: Step (in seconds) of the windowing procedure in MWCS
+        :type dtt_minlag: float
+        :param dtt_minlag: Minimum lag used for dv/v computation
+        :type dtt_width: float
+        :param dtt_width: Width of the time lag window (in seconds)
         :type used: bool
         :param used: Is the filter activated for the processing
         """
@@ -107,6 +111,8 @@ def declare_tables(prefix=None):
         rms_threshold = Column(Float())
         mwcs_wlen = Column(Float())
         mwcs_step = Column(Float())
+        dtt_minlag = Column(Float())
+        dtt_width = Column(Float())
         used = Column(Boolean(True))
 
         def __init__(self, **kwargs):
@@ -118,6 +124,8 @@ def declare_tables(prefix=None):
             # self.rms_threshold = rms_threshold
             # self.mwcs_wlen = mwcs_wlen
             # self.mwcs_step = mwcs_step
+            # self.dtt_minlag = dtt_minlag
+            # self.dtt_width = dtt_width
             # self.used = used
 
     ########################################################################

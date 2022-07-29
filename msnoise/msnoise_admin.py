@@ -186,8 +186,8 @@ class FilterView(ModelView):
     def mwcs_step(form, field):
         if field.data > form.data['mwcs_wlen']:
             raise ValidationError("'mwcs_step' should be smaller or equal to"
-                                  " 'mwcs_wlen'")
-    
+                                  " 'mwcs_wlen'") 
+
     form_args = dict(
         mwcs_low=dict(validators=[mwcs_low]),
         mwcs_high=dict(validators=[mwcs_high]),
@@ -196,9 +196,9 @@ class FilterView(ModelView):
     )
     
     column_list = ('ref', 'low', 'mwcs_low', 'mwcs_high', 'high',
-                   'rms_threshold', 'mwcs_wlen', 'mwcs_step', 'used')
+                   'rms_threshold', 'mwcs_wlen', 'mwcs_step', 'dtt_minlag', 'dtt_width', 'used')
     form_columns = ('low', 'mwcs_low', 'mwcs_high', 'high',
-                    'rms_threshold', 'mwcs_wlen', 'mwcs_step', 'used')
+                    'rms_threshold', 'mwcs_wlen', 'mwcs_step', 'dtt_minlag', 'dtt_width','used')
     
     def __init__(self, session, **kwargs):
         # You can pass name and other parameters if you want to
