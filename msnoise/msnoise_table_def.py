@@ -97,6 +97,8 @@ def declare_tables(prefix=None):
         :param dtt_minlag: Minimum lag used for dv/v computation
         :type dtt_width: float
         :param dtt_width: Width of the time lag window (in seconds)
+        :type dtt_v: float
+        :param dtt_v: Ballistic wave speed (in m/s)
         :type used: bool
         :param used: Is the filter activated for the processing
         """
@@ -113,6 +115,7 @@ def declare_tables(prefix=None):
         mwcs_step = Column(Float())
         dtt_minlag = Column(Float())
         dtt_width = Column(Float())
+        dtt_v = Column(Float())
         used = Column(Boolean(True))
 
         def __init__(self, **kwargs):
@@ -126,6 +129,7 @@ def declare_tables(prefix=None):
             # self.mwcs_step = mwcs_step
             # self.dtt_minlag = dtt_minlag
             # self.dtt_width = dtt_width
+            # self.dtt_v = dtt_v
             # self.used = used
 
     ########################################################################

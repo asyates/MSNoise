@@ -109,21 +109,35 @@ def main():
         s2 = get_station(db, station2.split('.')[0], station2.split('.')[1])
 
         dtt_lag = get_config(db, "dtt_lag")
-        dtt_v = float(get_config(db, "dtt_v"))
-        dtt_minlag = float(get_config(db, "dtt_minlag"))
-        dtt_width = float(get_config(db, "dtt_width"))
         dtt_sides = get_config(db, "dtt_sides")
-
-        if dtt_lag == "static":
-            minlag = dtt_minlag
-        else:
-            minlag = get_interstation_distance(s1, s2, s1.coordinates) / dtt_v
-
-        maxlag2 = minlag + dtt_width
-        print("betweeen", minlag, "and", maxlag2)
-
+ 
         for f in get_filters(db, all=False):
             filterid = int(f.ref)
+
+            if dtt_lag == "static":
+                try:
+                    minlag = f.dtt_minlag
+                    print('minlag defined in filter table, using this')
+                except:
+                    minlag = float(get_config(db, "dtt_minlag"))
+                    print('minlag not defined in filter table, using value from config')
+            else:
+                try:
+                    dtt_v = f.dtt_v
+                except:
+                    print('dtt_v not defined in filter table, using value from config')
+                    dtt_v = float(get_config(db, "dtt_v"))
+
+                minlag = get_interstation_distance(s1, s2, s1.coordinates) / dtt_v
+
+            try:
+                dtt_width = f.dtt_width
+            except:
+                print('dtt_width not defined in filter table, using config defined width')
+                dtt_width = float(get_config(db, "dtt_width"))
+
+            maxlag2 = minlag + dtt_width
+            print("betweeen", minlag, "and", maxlag2)
 
             for mov_stack in mov_stacks:
                 for components in params.all_components:

@@ -211,13 +211,30 @@ def main(interval=1, loglevel="INFO"):
                             logger.debug('%s: Distance is Zero?!' % pair)
                         tArray = df.index.values
                         if params.dtt_lag == "static":
-                            lmlag = -params.dtt_minlag
-                            rmlag = params.dtt_minlag
+                            try: 
+                                lmlag = -f.dtt_minlag
+                                rmlag = f.dtt_minlag
+                                print('dtt_minlag defined in filter table, using this')
+                            except:
+                                print('dtt_minlag not defined in filter table, using config defined length')
+                                lmlag = -params.dtt_minlag
+                                rmlag = params.dtt_minlag
                         else:
-                            lmlag = -dist / params.dtt_v
-                            rmlag = dist / params.dtt_v
-                        lMlag = lmlag - params.dtt_width
-                        rMlag = rmlag + params.dtt_width
+                            try:
+                                lmlag = -dist / f.dtt_v
+                                rmlag = dist / f.dtt_v
+                            except:
+                                print('dtt_v not defined in filter table, using config defined dtt_v')
+                                lmlag = -dist / params.dtt_v
+                                rmlag = dist / params.dtt_v
+
+                        try:
+                            lMlag = lmlag - f.dtt_width
+                            rMlag = rmlag + f.dtt_width
+                        except:
+                            print('dtt_width not defined in filter table, using config defined length')
+                            lMlag = lmlag - params.dtt_width
+                            rMlag = rmlag + params.dtt_width
 
                         if params.dtt_sides == "both":
                             tindex = np.where(((tArray >= lMlag) & (tArray <= lmlag)) | ((tArray >= rmlag) & (tArray <= rMlag)))[0]
