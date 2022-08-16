@@ -272,7 +272,7 @@ def whiten2(fft, Nfft, low, high, porte1, porte2, psds, whiten_type):
     taper[high:] *= 0
     taper *= taper
 
-    hann = scipy.signal.hann(porte2 - porte1 + 1)  # / float(porte2-porte1)
+    hann = scipy.signal.windows.hann(porte2 - porte1 + 1)  # / float(porte2-porte1)
 
     for i in range(fft.shape[0]):
         if whiten_type == "PSD":
@@ -321,7 +321,7 @@ def smooth(x, window='boxcar', half_win=3):
     if window == "boxcar":
         w = scipy.signal.boxcar(window_len).astype('complex')
     else:
-        w = scipy.signal.hanning(window_len).astype('complex')
+        w = scipy.signal.windows.hann(window_len).astype('complex')
     y = np.convolve(w / w.sum(), s, mode='valid')
     return y[half_win:len(y) - half_win]
 
