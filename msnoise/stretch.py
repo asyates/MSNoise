@@ -115,23 +115,34 @@ def main():
             filterid = int(f.ref)
 
             if dtt_lag == "static":
-                try:
+                try:   
+                    #try pull dtt_minlag from filter table (not present in older versions)
                     minlag = f.dtt_minlag
-                    print('minlag defined in filter table, using this')
+                        
+                    if minlag is None:
+                        #if Nonetype (not entered) use minlag from config table
+                        minlag = float(get_config(db, "dtt_minlag"))   
                 except:
-                    minlag = float(get_config(db, "dtt_minlag"))
                     print('minlag not defined in filter table, using value from config')
+                    minlag = float(get_config(db, "dtt_minlag"))
             else:
                 try:
                     dtt_v = f.dtt_v
+                    if dtt_v is None:
+                        dtt_v = float(get_config(db, 'dtt_v'))
+
                 except:
-                    print('dtt_v not defined in filter table, using value from config')
                     dtt_v = float(get_config(db, "dtt_v"))
+                    print('dtt_v not defined in filter table, using value from config')
 
                 minlag = get_interstation_distance(s1, s2, s1.coordinates) / dtt_v
 
             try:
                 dtt_width = f.dtt_width
+                
+                if dtt_width is None:
+                    dtt_width = float(get_config(db, "dtt_width"))
+                
             except:
                 print('dtt_width not defined in filter table, using config defined width')
                 dtt_width = float(get_config(db, "dtt_width"))
