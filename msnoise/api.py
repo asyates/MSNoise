@@ -314,7 +314,7 @@ def get_filters(session, all=False):
 
 
 def update_filter(session, ref, low, mwcs_low, high, mwcs_high,
-                  rms_threshold, mwcs_wlen, mwcs_step, used):
+                  rms_threshold, mwcs_wlen, mwcs_step, dtt_width, used):
     """Updates or Insert a new Filter in the database.
 
     .. seealso:: :class:`msnoise.msnoise_table_def.declare_tables.Filter`
@@ -341,6 +341,8 @@ def update_filter(session, ref, low, mwcs_low, high, mwcs_high,
     :param mwcs_wlen: Window length (in seconds) to perform MWCS
     :type mwcs_step: float
     :param mwcs_step: Step (in seconds) of the windowing procedure in MWCS
+    :type dtt_width: float
+    :param dtt_width: Width of the time lag window (in seconds)
     :type used: bool
     :param used: Is the filter activated for the processing
     """
@@ -354,6 +356,7 @@ def update_filter(session, ref, low, mwcs_low, high, mwcs_high,
         filter.rms_threshold = rms_threshold
         filter.mwcs_wlen = mwcs_wlen
         filter.mwcs_step = mwcs_step
+        filter.dtt_width = dtt_width
         filter.used = used
         session.add(filter)
     else:
@@ -364,6 +367,7 @@ def update_filter(session, ref, low, mwcs_low, high, mwcs_high,
         filter.rms_threshold = rms_threshold
         filter.mwcs_wlen = mwcs_wlen
         filter.mwcs_step = mwcs_step
+        filter.dtt_width = dtt_width
         filter.used = used
     session.commit()
     return
