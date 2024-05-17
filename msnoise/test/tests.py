@@ -109,12 +109,13 @@ class MSNoiseTests(unittest.TestCase):
 
         for f in filters:
             update_filter(db, f.ref, f.low, f.mwcs_low, f.high, f.mwcs_high,
-                          f.mwcs_wlen, f.mwcs_step, f.used)
+                          f.mwcs_wlen, f.mwcs_step, f.dtt_minlag, f.dtt_width, f.dtt_v, f.used)
 
         dbfilters = get_filters(db)
         for i, filter in enumerate(dbfilters):
             for param in ['low', 'mwcs_low', 'high', 'mwcs_high',
-                          'mwcs_wlen', 'mwcs_step', 'used']:
+                          'mwcs_wlen', 'mwcs_step', 'dtt_minlag',
+                          'dtt_width','dtt_v', 'used']:
                 self.failUnlessEqual(eval("filter.%s" % param),
                                      eval("filters[i].%s" % param))
 
