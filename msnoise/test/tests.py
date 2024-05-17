@@ -374,7 +374,7 @@ class MSNoiseTests(unittest.TestCase):
         reset_jobs(db, "MWCS", alljobs=True)
         db.close()
 
-        from ..stretch import main
+        from ..stretch2 import main
         main()
 
     def test_030_create_fake_new_files(self):
