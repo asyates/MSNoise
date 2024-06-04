@@ -91,6 +91,12 @@ def declare_tables(prefix=None):
         :param mwcs_wlen: Window length (in seconds) to perform MWCS
         :type mwcs_step: float
         :param mwcs_step: Step (in seconds) of the windowing procedure in MWCS
+        :type dtt_minlag: float
+        :param dtt_minlag: If dtt_lag =static: min lag time (in seconds) 
+        :type dtt_width: float
+        :param dtt_width: Width of the time lag window (in seconds)
+        :type dtt_v: float
+        :param dtt_v: If dtt_lag =dynamic: what velocity to use to avoid ballistic wave (in km/s)
         :type used: bool
         :param used: Is the filter activated for the processing
         """
@@ -104,6 +110,9 @@ def declare_tables(prefix=None):
         mwcs_high = Column(Float())
         mwcs_wlen = Column(Float())
         mwcs_step = Column(Float())
+        dtt_minlag = Column(Float())
+        dtt_width = Column(Float())
+        dtt_v = Column(Float())
         used = Column(Boolean(True))
 
         def __init__(self, **kwargs):
@@ -114,6 +123,9 @@ def declare_tables(prefix=None):
             # self.mwcs_high = mwcs_high
             # self.mwcs_wlen = mwcs_wlen
             # self.mwcs_step = mwcs_step
+            # self.dtt_minlag = dtt_minlag
+            # self.dtt_width = dtt_width
+            # self.dtt_v = dtt_v
             # self.used = used
 
     ########################################################################

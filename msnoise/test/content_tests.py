@@ -71,11 +71,14 @@ class MSNoiseTests(unittest.TestCase):
         f.mwcs_high = 0.98
         f.mwcs_wlen = 10
         f.mwcs_step = 5
+        f.dtt_minlag = 5
+        f.dtt_width = 20
+        f.dtt_v = 1
         f.used = True
         filters.append(f)
         for f in filters:
             update_filter(db, f.ref, f.low, f.mwcs_low, f.high, f.mwcs_high,
-                          f.mwcs_wlen, f.mwcs_step, f.used)
+                          f.mwcs_wlen, f.mwcs_step, f.dtt_minlag, f.dtt_width, f.dtt_v, f.used)
 
     def test_005_populate_station_table(self):
         from ..s002populate_station_table import main

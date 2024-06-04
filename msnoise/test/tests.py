@@ -89,6 +89,9 @@ class MSNoiseTests(unittest.TestCase):
         f.mwcs_high = 0.98
         f.mwcs_wlen = 10
         f.mwcs_step = 5
+        f.dtt_minlag = 5
+        f.dtt_width = 20
+        f.dtt_v = 1
         f.used = True
         filters.append(f)
         f = Filter()
@@ -98,17 +101,21 @@ class MSNoiseTests(unittest.TestCase):
         f.mwcs_high = 0.98
         f.mwcs_wlen = 10
         f.mwcs_step = 5
+        f.dtt_minlag = 5
+        f.dtt_width = 20
+        f.dtt_v = 1
         f.used = True
         filters.append(f)
 
         for f in filters:
             update_filter(db, f.ref, f.low, f.mwcs_low, f.high, f.mwcs_high,
-                          f.mwcs_wlen, f.mwcs_step, f.used)
+                          f.mwcs_wlen, f.mwcs_step, f.dtt_minlag, f.dtt_width, f.dtt_v, f.used)
 
         dbfilters = get_filters(db)
         for i, filter in enumerate(dbfilters):
             for param in ['low', 'mwcs_low', 'high', 'mwcs_high',
-                          'mwcs_wlen', 'mwcs_step', 'used']:
+                          'mwcs_wlen', 'mwcs_step', 'dtt_minlag',
+                          'dtt_width','dtt_v', 'used']:
                 self.failUnlessEqual(eval("filter.%s" % param),
                                      eval("filters[i].%s" % param))
 
@@ -367,7 +374,7 @@ class MSNoiseTests(unittest.TestCase):
         reset_jobs(db, "MWCS", alljobs=True)
         db.close()
 
-        from ..stretch import main
+        from ..stretch2 import main
         main()
 
     def test_030_create_fake_new_files(self):

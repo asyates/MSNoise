@@ -3,23 +3,23 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - numpy
-  - scipy
-  - obspy
-  - sqlalchemy
-  - flask
-  - flask-admin
-  - flask-wtf
-  - markdown
-  - scandir
-  - logbook
+  - click=8.1.7
+  - flask=3.0.3
+  - flask-admin=1.6.1
+  - flask-wtf=1.2.1
+  - folium=0.16.0
+  - logbook=1.7.0.post0
+  - markdown=3.6
+  - numpy=1.26.4
+  - obspy=1.4.1
+  - pip=24.0
+  - pymysql=1.1.0
+  - scipy=1.13.0
+  - sqlalchemy=1.4.49
   - pytables
-  - click
-  - pandas
-  - folium
-  - pip
-  - pymysql
   - xarray
+  - pandas==2.2.2
+  - scandir==1.10.0
   - pip:
-      - sqlalchemy-utils
+      - sqlalchemy-utils==0.41.2
 

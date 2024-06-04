@@ -195,9 +195,9 @@ class FilterView(ModelView):
     )
     
     column_list = ('ref', 'low', 'mwcs_low', 'mwcs_high', 'high',
-                   'mwcs_wlen', 'mwcs_step', 'used')
+                   'mwcs_wlen', 'mwcs_step', 'dtt_minlag', 'dtt_width', 'dtt_v', 'used')
     form_columns = ('low', 'mwcs_low', 'mwcs_high', 'high',
-                    'mwcs_wlen', 'mwcs_step', 'used')
+                    'mwcs_wlen', 'mwcs_step', 'dtt_minlag', 'dtt_width', 'dtt_v', 'used')
     
     def __init__(self, session, **kwargs):
         # You can pass name and other parameters if you want to

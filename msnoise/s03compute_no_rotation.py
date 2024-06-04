@@ -377,7 +377,7 @@ def main(loglevel="INFO"):
 
             # TODO should not hardcode 4 percent!
             wlen = int(0.04 * data.shape[1])
-            taper_sides = scipy.signal.hann(2 * wlen + 1)
+            taper_sides = scipy.signal.windows.hann(2 * wlen + 1)
             taper = np.hstack(
                 (taper_sides[:wlen], np.ones(data.shape[1] - 2 * wlen),
                  taper_sides[len(taper_sides) - wlen:]))
@@ -475,7 +475,7 @@ def main(loglevel="INFO"):
                 filterlow = float(filterdb.low)
                 filterhigh = float(filterdb.high)
 
-                freq_vec = sf.fftfreq(nfft, d=dt)[:nfft // 2]
+                freq_vec = sf.fftfreq(nfft, d=dt)[:nfft // 2] 
                 freq_sel = np.where((freq_vec >= filterlow) & (freq_vec <= filterhigh))[0]
                 low = freq_sel[0] - napod
                 if low <= 0:
