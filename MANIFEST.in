@@ -1,6 +1,7 @@
 recursive-include msnoise/test *.*
 recursive-include msnoise/templates *
 recursive-include msnoise/static *
+recursive-include msnoise/config *
 include versioneer.py
 include msnoise/_version.py
 include msnoise/default.csv
