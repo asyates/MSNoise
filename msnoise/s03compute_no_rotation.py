@@ -282,7 +282,7 @@ def main(loglevel="INFO"):
     while is_next_job_for_step(db, step_category="cc"):
         logger.info("Getting the next job")
         jobs, step = get_next_job_for_step(db, step_category="cc")
-        print(jobs)
+        #print(jobs)
 
         stations = []
         pairs = []
@@ -305,15 +305,19 @@ def main(loglevel="INFO"):
         params.components_to_compute =  params.components_to_compute.split(',')
         params.components_to_compute_single_station = params.components_to_compute_single_station.split(',')
 
-        print(params)
+        #print(params)
 
         # Filters:
         filter_steps = get_filter_steps_for_cc_step(db, step.step_id, workflow_id='default')
-        print(filter_steps)
-        filters = []
-        for filter in filter_steps:
-            filters.append(get_config_set_details(db, filter.category, filter.set_number, format='AttribDict'))
-        print(filters)
+        
+        filters = {}
+        for f in filter_steps:
+            cfg = get_config_set_details(db, f.category, f.set_number, format='AttribDict')
+            filters[f.set_number] = {
+                "name": f.step_name,
+                "cfg":  cfg             
+            }
+
 
         logger.info("New CC Job: %s (%i pairs with %i stations)" %
                      (goal_day, len(pairs), len(stations)))
@@ -330,7 +334,7 @@ def main(loglevel="INFO"):
         current_process = get_step_predecessors(db, step.step_id)[0]
 
 
-        stream = read(r"PREPROCESSED\%s\%s.mseed" % (current_process.step_name, goal_day))
+        stream = read(os.path.join("PREPROCESSED", current_process.step_name, f"{goal_day}.mseed"))
 
         # TODO PREPROCESS IF THE "PREPROCESS_ON_THE_FLY" config?
         # comps = np.unique(comps)
@@ -451,9 +455,10 @@ def main(loglevel="INFO"):
             tmptime = tmp[0].stats.endtime.datetime
             thistime = tmptime.strftime("%Y-%m-%d %H:%M:%S")
 
-            for filterid, filter in enumerate(filters):
-                logger.debug("Processing filter %i" % filterid)
-                print(filter)
+            for filtsetnum, entry in filters.items():
+                filter = entry["cfg"]      # AttribDict with params
+                filt_name = entry['name']
+                logger.debug("Processing filter set %s (%s)", filtsetnum, filt_name)
 
                 # Standard operator for CC
                 cc_index = []
@@ -574,7 +579,7 @@ def main(loglevel="INFO"):
                         exit(1)
 
                     for key in corr:
-                        ccfid = key + "_%02i" % filterid + "_" + thisdate
+                        ccfid = key + "_%02i" % filtsetnum + "_" + thisdate
                         logger.debug("CCF ID: %s" % ccfid)
                         if ccfid not in allcorr:
                             allcorr[ccfid] = {}
@@ -606,7 +611,7 @@ def main(loglevel="INFO"):
                                        normalized=params.cc_normalisation)
                         
                         for key in corr:
-                            ccfid = key + "_%02i" % filterid + "_" + thisdate
+                            ccfid = key + "_%02i" % filtsetnum + "_" + thisdate
                             logger.debug("CCF ID - CC: %s" % ccfid)
                             if ccfid not in allcorr:
                                 allcorr[ccfid] = {}
@@ -643,7 +648,7 @@ def main(loglevel="INFO"):
                                        normalized=params.cc_normalisation)
 
                         for key in corr:
-                            ccfid = key + "_%02i" % filterid + "_" + thisdate
+                            ccfid = key + "_%02i" % filtsetnum + "_" + thisdate
                             logger.debug("CCF ID - SC: %s" % ccfid)
                             if ccfid not in allcorr:
                                 allcorr[ccfid] = {}
@@ -657,7 +662,14 @@ def main(loglevel="INFO"):
 
         if params.keep_all:
             for ccfid in allcorr.keys():
-                export_allcorr2(db, ccfid, allcorr[ccfid])
+                parts = ccfid.split("_")
+                filtsetnum = int(parts[-2])
+                filter_step_name = filters[filtsetnum]["name"] #cleaner way to do this for sure 
+                export_allcorr2(db, ccfid,
+                                current_process.step_name,
+                                step.step_name,
+                                filter_step_name,
+                                allcorr[ccfid])
 
         if params.keep_days:
             for ccfid in allcorr.keys():

@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from pathlib import Path
 
 from . import DBConfigNotFoundError
 from .msnoise_table_def import Job, Station, Config, DataAvailability, WorkflowStep, WorkflowLink
@@ -1900,21 +1901,21 @@ def export_allcorr(session, ccfid, data):
     return
 
 
-def export_allcorr2(session, ccfid, data):
-    output_folder = get_config(session, 'output_folder')
+def export_allcorr2(session, ccfid, preprocess_step_name,
+                    cc_step_name, filter_step_name, data):
+    
+    # ccfid: station1_station2_components_filterid_date
     station1, station2, components, filterid, date = ccfid.split('_')
+    output_folder = get_config(session, 'output_folder')  # e.g. "CROSS_CORRELATIONS"
 
-    path = os.path.join(output_folder, "%02i" % int(filterid),
-                        station1, station2, components)
-    if not os.path.isdir(path):
-        os.makedirs(path, exist_ok=True)
+    root = Path(output_folder) / preprocess_step_name / cc_step_name / filter_step_name
+    path = root / station1 / station2 / components
+    path.mkdir(parents=True, exist_ok=True)
 
     df = pd.DataFrame().from_dict(data).T
     df.columns = get_t_axis(session)
-    df.to_hdf(os.path.join(path, date+'.h5'), key='data')
+    df.to_hdf(path / f"{date}.h5", key='data')  # needs pytables
     del df
-    return
-
 
 def add_corr(session, station1, station2, filterid, date, time, duration,
              components, CF, sampling_rate, day=False, ncorr=0, params=None):
@@ -3679,8 +3680,6 @@ def get_workflow_links(session, workflow_id="default"):
     """Get all links in a workflow"""
     from .msnoise_table_def import declare_tables
     schema = declare_tables()
-
-    return session.query(schema.WorkflowLink) \
         .join(schema.WorkflowStep, schema.WorkflowLink.from_step_id == schema.WorkflowStep.step_id) \
         .filter(schema.WorkflowStep.workflow_id == workflow_id) \
         .filter(schema.WorkflowLink.is_active == True).all()
@@ -3694,6 +3693,23 @@ def get_step_predecessors(session, step_id):
         .join(schema.WorkflowLink, schema.WorkflowStep.step_id == schema.WorkflowLink.from_step_id) \
         .filter(schema.WorkflowLink.to_step_id == step_id) \
         .filter(schema.WorkflowLink.is_active == True).all()
+
+def get_ancestry_paths(session, step_id):
+    """Return all ancestry paths (lists of WorkflowSteps) leading to step_id"""
+    preds = get_step_predecessors(session, step_id)
+    if not preds:
+        return [[get_step_by_id(session, step_id)]]
+    
+    paths = []
+    for p in preds:
+        for subpath in get_ancestry_paths(session, p.step_id):
+            paths.append(subpath + [get_step_by_id(session, step_id)])
+    return paths
+
+def get_step_by_id(session, step_id):
+    from msnoise.msnoise_table_def import declare_tables
+    schema = declare_tables()
+    return session.query(schema.WorkflowStep).filter(schema.WorkflowStep.step_id == step_id).one()
 
 def get_step_successors(session, step_id):
     """Get all steps that this step feeds into"""
