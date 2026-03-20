@@ -75,6 +75,31 @@ from numpy import asarray as ar
 from scipy.optimize import curve_fit
 from scipy.ndimage import map_coordinates
 
+def get_moving_ref(data_full, current_day, mov_stack, n_stacks, overlap):
+    logger = get_logger('msnoise.compute_str_child', 'INFO')
+    M = int(mov_stack[0].replace('d', ''))      # e.g. 5
+    S = int(mov_stack[1].replace('d', ''))      # e.g. 1
+    step = M // S                               # index positions per independent stack, e.g. 5
+
+    # find position of current day in index
+    available_dates = data_full.index.floor('d')
+    current_idx = np.searchsorted(available_dates, pd.Timestamp(current_day))
+
+    if overlap:
+        ref_indices = [current_idx - step * i for i in range(n_stacks)]
+    else:
+        ref_indices = [current_idx - step * i for i in range(1, n_stacks + 1)]
+
+    # filter out invalid (negative) indices
+    ref_indices = [i for i in ref_indices if i >= 0]
+
+    logger.info("Current day: %s (idx %d)" % (current_day, current_idx))
+    logger.info("Using ref indices: %s = dates %s" % (ref_indices, available_dates[ref_indices].tolist()))
+
+    if len(ref_indices) == 0:
+        return None
+
+    return data_full.iloc[ref_indices].mean(axis=0).values
 
 def stretch_mat_creation(refcc, str_range=0.01, nstr=1001):
     """ Matrix of stretched instance of a reference trace.
@@ -167,114 +192,138 @@ def main(loglevel="INFO"):
             continue
         pair = jobs[0].pair
         refs, days = zip(*[[job.ref, job.day] for job in jobs])
+        ref_name = pair.replace(':', '_')
 
         logger.info(
             "There are STR (stretching) jobs for some days to recompute for %s" % pair)
         for filter_ref, stretching_list in dvv_stretching_params.items():
             filterid = int(filter_ref)
             filt_components, filt_components_single_station = get_filter_components_to_compute(db, filterid, params)
-            filt_all_components = np.unique(filt_components + filt_components_single_station)    
+            filt_all_components = np.unique(filt_components + filt_components_single_station)
+
             for str_params in stretching_list:
                 strid = int(str_params.ref)
-                #low = f.freqmin
-                #high = f.freqmax
+                use_moving_ref = str_params.stretching_reftype == "mov"
 
-                #def ww(a):
-                #    from .move2obspy import whiten
-                #    n = next_fast_len(len(a))
-                #    return whiten(a, n, 1./params.cc_sampling_rate,
-                #                low, high, returntime=True)
                 for components in filt_all_components:
-                    ref_name = pair.replace(':', '_')
                     station1, station2 = pair.split(":")
-                    try:
-                        ref = xr_get_ref(station1, station2, components, filterid,
-                                        taxis)
-                        ref = ref.CCF.values
-                    except FileNotFoundError as fullpath:
-                        logger.error("FILE DOES NOT EXIST: %s, skipping" % fullpath)
-                        continue
-                    # print("Whitening ref")
-                    # ref = ww(ref)
 
-                    # zero the data outside of the minlag-maxlag timing
+                    # --- lag window ---
                     if str_params.stretching_lag == "static":
                         minlag = str_params.stretching_minlag
                     else:
                         SS1 = station1.split(".")
                         SS2 = station2.split(".")
-
                         SS1 = get_station(db, SS1[0], SS1[1])
                         SS2 = get_station(db, SS2[0], SS2[1])
-                        minlag = get_interstation_distance(SS1, SS2,
-                                                        SS1.coordinates) / str_params.stretching_v
+                        minlag = get_interstation_distance(SS1, SS2, SS1.coordinates) / str_params.stretching_v
+
                     maxlag2 = minlag + str_params.stretching_width
                     mid = int(params.goal_sampling_rate * params.maxlag)
-                    print("betweeen", minlag, "and", maxlag2    )
-                    ref[mid - int(minlag * goal_sampling_rate):mid + int(
-                        minlag * goal_sampling_rate)] *= 0.
-                    ref[:mid - int(maxlag2 * goal_sampling_rate)] *= 0.
-                    ref[mid + int(maxlag2 * goal_sampling_rate):] *= 0.
-                    # TODO ADD the def here or in the API
+                    print("between", minlag, "and", maxlag2)
+
                     str_range = str_params.stretching_max
                     nstr = str_params.stretching_nsteps
-                    ref_stretched, deltas = stretch_mat_creation(ref,str_range=str_range, nstr=nstr)
+
+                    # --- static ref: load once outside mov_stack loop ---
+                    if not use_moving_ref:
+                        try:
+                            ref = xr_get_ref(station1, station2, components, filterid, taxis)
+                            ref = ref.CCF.values
+                        except FileNotFoundError as fullpath:
+                            logger.error("FILE DOES NOT EXIST: %s, skipping" % fullpath)
+                            continue
+                        ref[mid - int(minlag * goal_sampling_rate):mid + int(minlag * goal_sampling_rate)] *= 0.
+                        ref[:mid - int(maxlag2 * goal_sampling_rate)] *= 0.
+                        ref[mid + int(maxlag2 * goal_sampling_rate):] *= 0.
+                        ref_stretched, deltas = stretch_mat_creation(ref, str_range=str_range, nstr=nstr)
 
                     for mov_stack in mov_stacks:
-                        output = []
-                        #alldays = []
-                        #alldeltas = []
-                        #allcoefs = []
-                        #allerrs = []
-
                         fn = r"STACKS2/%02i/%s_%s/%s/%s_%s.nc" % (
-                        filterid, mov_stack[0], mov_stack[1], components, station1, station2)
+                            filterid, mov_stack[0], mov_stack[1], components, station1, station2)
                         print("Reading %s" % fn)
                         if not os.path.isfile(fn):
                             print("FILE DOES NOT EXIST: %s, skipping" % fn)
                             continue
-                        data = xr_create_or_open(fn)
-                        data = data.CCF.to_dataframe().unstack().droplevel(0, axis=1)
-                        to_search = pd.to_datetime(days)
-                        data = data[data.index.floor('d').isin(to_search)]
-                        data = data.dropna()
 
-                        # print("Whitening %s" % fn)
-                        # data = pd.DataFrame(data)
-                        # data = data.apply(ww, axis=1, result_type="broadcast")
+                        # always load full data — moving ref needs history beyond target days
+                        data_full = xr_create_or_open(fn)
+                        data_full = data_full.CCF.to_dataframe().unstack().droplevel(0, axis=1)
+                        data_full = data_full.dropna()
 
-                        data.iloc[:,mid - int(minlag * params.goal_sampling_rate):mid + int(
-                            minlag * params.goal_sampling_rate)] *= 0.
-                        data.iloc[:,mid - int(maxlag2 * params.goal_sampling_rate)] *= 0.
-                        data.iloc[:,mid + int(maxlag2 * params.goal_sampling_rate):] *= 0.
+                        # apply lag masking to full dataset
+                        data_full.iloc[:, mid - int(minlag * params.goal_sampling_rate):mid + int(minlag * params.goal_sampling_rate)] *= 0.
+                        data_full.iloc[:, mid - int(maxlag2 * params.goal_sampling_rate)] *= 0.
+                        data_full.iloc[:, mid + int(maxlag2 * params.goal_sampling_rate):] *= 0.
 
-                        data_values = data.values
-                        num_days = data_values.shape[0]
-                        num_stretch = ref_stretched.shape[0]
+                        if not use_moving_ref:
+                            # ---- STATIC: vectorised over all days ----
+                            data = data_full[data_full.index.floor('d').isin(pd.to_datetime(days))]
 
-                        # Normalizing the data for correlation
-                        data_norm = (data_values - data_values.mean(axis=1, keepdims=True)) / data_values.std(axis=1, keepdims=True)
-                        ref_stretched_norm = (ref_stretched - ref_stretched.mean(axis=1, keepdims=True)) / ref_stretched.std(axis=1, keepdims=True)
+                            data_values = data.values
+                            num_days = data_values.shape[0]
 
-                        # Compute the correlation coefficients
-                        corr_coeffs = np.dot(ref_stretched_norm, data_norm.T) / ref_stretched.shape[1]
+                            data_norm = (data_values - data_values.mean(axis=1, keepdims=True)) / data_values.std(axis=1, keepdims=True)
+                            ref_stretched_norm = (ref_stretched - ref_stretched.mean(axis=1, keepdims=True)) / ref_stretched.std(axis=1, keepdims=True)
 
-                        max_corr_indices = np.argmax(corr_coeffs, axis=0)
-                        max_corr_values = corr_coeffs[max_corr_indices, np.arange(num_days)]
+                            corr_coeffs = np.dot(ref_stretched_norm, data_norm.T) / ref_stretched.shape[1]
+                            max_corr_indices = np.argmax(corr_coeffs, axis=0)
+                            max_corr_values = corr_coeffs[max_corr_indices, np.arange(num_days)]
 
-                        alldays = data.index
-                        alldeltas = deltas[max_corr_indices]
-                        allcoefs = max_corr_values
+                            alldays = data.index
+                            alldeltas = deltas[max_corr_indices]
+                            allcoefs = max_corr_values
+                            all_corr_coeffs = corr_coeffs
 
+                        else:
+                            # ---- MOVING: per-day loop ----
+                            n_stacks = str_params.stretching_mov_stack  # multiplier
+                            overlap = str_params.stretching_mov_overlap
+
+                            alldays = []
+                            alldeltas = []
+                            allcoefs = []
+                            all_corr_coeffs = []
+
+                            for day in sorted(pd.to_datetime(days)):
+                                # get moving reference for this day
+                                mov_ref = get_moving_ref(data_full, day, mov_stack, n_stacks, overlap)
+                                if mov_ref is None:
+                                    logger.warning("No moving reference data available for %s, skipping" % day)
+                                    continue
+
+                                # stretch the moving reference
+                                ref_stretched_mov, deltas_mov = stretch_mat_creation(mov_ref, str_range=str_range, nstr=nstr)
+
+                                # get current day's data
+                                day_data = data_full[data_full.index.floor('d') == day]
+                                if len(day_data) == 0:
+                                    continue
+
+                                day_values = day_data.values
+                                data_norm = (day_values - day_values.mean(axis=1, keepdims=True)) / day_values.std(axis=1, keepdims=True)
+                                ref_stretched_norm = (ref_stretched_mov - ref_stretched_mov.mean(axis=1, keepdims=True)) / ref_stretched_mov.std(axis=1, keepdims=True)
+
+                                corr_coeffs = np.dot(ref_stretched_norm, data_norm.T) / ref_stretched_mov.shape[1]
+                                max_corr_idx = np.argmax(corr_coeffs, axis=0)
+                                max_corr_val = corr_coeffs[max_corr_idx, np.arange(len(day_data))]
+
+                                alldays.extend(day_data.index)
+                                alldeltas.extend(deltas_mov[max_corr_idx])
+                                allcoefs.extend(max_corr_val)
+                                all_corr_coeffs.append(corr_coeffs[:, 0])
+                        
+                            all_corr_coeffs = np.array(all_corr_coeffs).T
+                        
                         allerrs = []
 
-                        for day_idx in range(data_values.shape[0]):
+                        for day_idx in range(len(alldays)):
 
                             ###### gaussian fit ######
                             def gauss_function(x, a, x0, sigma):
                                 return a * np.exp(-(x - x0) ** 2 / (2 * sigma ** 2))
 
-                            coeffs = corr_coeffs[:, day_idx]
+                            coeffs = all_corr_coeffs[:, day_idx]
                             x = ar(range(len(coeffs)))
                             ymax_index = np.argmax(coeffs)
                             ymin = np.min(coeffs)
@@ -314,6 +363,7 @@ def main(loglevel="INFO"):
                             final = final[~final.index.duplicated(keep='last')]
                             final = final.sort_index()
                             final.to_csv(fn, index_label="Date")
+                            
                         ### TODO END
 
         massive_update_job(db, jobs, "D")

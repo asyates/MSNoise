@@ -146,8 +146,8 @@ from flask_admin.form.widgets import Select2Widget
 from flask_admin.model import typefmt
 from wtforms import SelectMultipleField
 from wtforms.widgets import ListWidget, CheckboxInput
-from wtforms.validators import ValidationError
-from wtforms.fields import SelectField, StringField, BooleanField, DateField, SelectMultipleField
+from wtforms.validators import ValidationError, Optional
+from wtforms.fields import SelectField, StringField, BooleanField, DateField, SelectMultipleField, IntegerField
 from wtforms.utils import unset_value
 from flask_wtf import Form
 from flask_admin.form import widgets
@@ -262,11 +262,15 @@ class DvvStretchingView(ModelView):
 
     column_list = ('ref', 'filters', 'stretching_minlag', 'stretching_width', 
                    'stretching_lag', 'stretching_v', 'stretching_sides', 
-                   'stretching_max', 'stretching_nsteps', 'used')
+                   'stretching_max', 'stretching_nsteps',
+                   'stretching_reftype', 'stretching_mov_stack', 'stretching_mov_overlap',
+                   'used')
     
     form_columns = ('filters', 'stretching_minlag', 'stretching_width', 
                     'stretching_lag', 'stretching_v', 'stretching_sides', 
-                    'stretching_max', 'stretching_nsteps', 'used')
+                    'stretching_max', 'stretching_nsteps',
+                    'stretching_reftype', 'stretching_mov_stack', 'stretching_mov_overlap',
+                    'used')
 
     # Formatter to display associated filters as a comma-separated list
     def _filters_formatter(view, context, model, name):
@@ -287,7 +291,20 @@ class DvvStretchingView(ModelView):
             'Stretching Sides',
             choices=[('both', 'Both'), ('left', 'Left'), ('right', 'Right')],
             default='both'
-        )
+        ),
+        'stretching_reftype': SelectField(
+            'Reference Type',
+            choices=[('static', 'Static'), ('mov', 'Moving')],
+            default='static'
+        ),
+        'stretching_mov_stack': IntegerField(
+            'Moving Stack Multiplier (1 = same size as current stack)',
+            default=1
+        ),
+        'stretching_mov_overlap': BooleanField(
+            'Allow Overlap',
+            default=False
+        ),
     }
 
     def __init__(self, session, **kwargs):
@@ -300,9 +317,9 @@ class DvvStretchingView(ModelView):
         model_pk = getattr(self.model, self._primary_key)
         query = self.get_query().filter(model_pk.in_(ids))
         for s in query.all():
-            s.used = not s.used  # Toggle True/False
+            s.used = not s.used
         self.session.commit()
-        return  
+        return
     
 class DvvWctView(ModelView):
     view_title = "Wavelet Transform Configuration for dv/v"

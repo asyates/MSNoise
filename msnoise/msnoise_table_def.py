@@ -53,7 +53,7 @@ def declare_tables(prefix=None):
 
     # Define the namedtuple to return
     sqlschema = namedtuple('SQLSchema', ['Base', 'PrefixerBase', 'Filter',
-        'Job', 'Station', 'Config', 'DataAvailability', 'DvvMwcs', 'DvvMwcsDtt', 
+        'Job', 'Station', 'Config', 'DataAvailability', 'CCParam', 'cc_filter_assoc', 'DvvMwcs', 'DvvMwcsDtt', 
         'DvvStretching', 'DvvWct', 'DvvWctDtt', 'filter_mwcs_assoc', 'mwcs_dtt_assoc',
         'filter_stretching_assoc', 'filter_wct_assoc', 'wct_dtt_assoc'])
 
@@ -76,6 +76,12 @@ def declare_tables(prefix=None):
     ########################################################################
     # **Association Tables**
     
+    cc_filter_assoc = Table(
+        "cc_filter_assoc", PrefixerBase.metadata,
+        Column("filt_ref", Integer, ForeignKey("filters.ref"), primary_key=True),
+        Column("ccparam_ref", Integer, ForeignKey("ccparam.ref"), primary_key=True)
+    )
+
     filter_mwcs_assoc = Table(
         "filter_mwcs_assoc", PrefixerBase.metadata,
         Column("dvv_mwcs_ref", Integer, ForeignKey("dvv_mwcs.ref"), primary_key=True),
@@ -107,6 +113,65 @@ def declare_tables(prefix=None):
     )
 
     ########################################################################
+
+    class CCParam(PrefixerBase):
+
+        """
+            Cross-correlation parameter set.
+            Each row represents a named group of CC (and stacking) parameters.
+        """
+
+        __incomplete_tablename__ = "ccparam"
+
+        ref = Column(Integer, primary_key=True)
+        label = Column(String(255), unique=True)
+        used = Column(Boolean, default=True)
+
+        # Cross-correlation parameters (compute_cc)
+        analysis_duration = Column(Integer)
+        cc_sampling_rate = Column(Float)
+        cc_type = Column(String(10))
+        cc_type_single_station_AC = Column(String(10))
+        cc_type_single_station_SC = Column(String(10))
+        cc_normalisation = Column(String(10))
+        clip_after_whiten = Column(String(1))  # Y/N
+        components_to_compute = Column(String(50))
+        components_to_compute_single_station = Column(String(50))
+        corr_duration = Column(Integer)
+        export_format = Column(String(20))
+        keep_all = Column(String(1))  # Y/N
+        keep_days = Column(String(1))  # Y/N
+        maxlag = Column(Float)
+        output_folder = Column(String(255))
+        overlap = Column(Float)
+        preprocess_highpass = Column(Float)
+        preprocess_lowpass = Column(Float)
+        preprocess_max_gap = Column(Float)
+        preprocess_taper_length = Column(Float)
+        remove_response = Column(String(1))  # Y/N
+        resampling_method = Column(String(50))
+        response_format = Column(String(50))
+        response_path = Column(String(255))
+        response_prefilt = Column(String(255))  # Could store as "(0.005, 0.006, 30.0, 35.0)"
+        sac_format = Column(String(50))
+        whitening = Column(String(1))  # A/B/etc.
+        whitening_type = Column(String(10))
+        winsorizing = Column(Float)
+
+        # Stacking parameters
+        mov_stack = Column(String(255))  # e.g., "(('1d','1d'),('5d','1d'))" — parse with ast.literal_eval
+        pws_power = Column(Float)
+        pws_timegate = Column(Float)
+        stack_method = Column(String(50))
+        ref_begin = Column(String(10))  # e.g., "1970-01-01"
+        ref_end = Column(String(10))    # e.g., "2100-01-01"
+        wienerfilt = Column(String(1))  # Y/N
+        wiener_mlen = Column(String(10))  # e.g., "24h"
+        wiener_nlen = Column(String(10))  # e.g., "0.5s"
+
+        # Optional: link to filters
+        filters = relationship("Filter", secondary="cc_filter_assoc", back_populates="cc_params")
+
 
     class DvvMwcs(PrefixerBase):
         """
@@ -210,6 +275,16 @@ def declare_tables(prefix=None):
         :param stretching_max: Maximum stretching coefficient, e.g. 0.5 = 50%, 0.01 = 1%
         :type stretching_nsteps: int
         :param stretching_nsteps: Number of stretching steps between 1-``stretching_max`` and 1+``stretching_max``
+        :param stretching_reftype: Reference type to use for stretching analysis: [static]/mov.
+                ``static`` uses a fixed stack over the full period;
+                ``mov`` uses a rolling/moving reference stack centered on each target day.
+        :type stretching_mov_stack: int
+        :param stretching_mov_stack: Number of days to include in the moving reference stack window.
+                                 Only used when ``stretching_reftype`` = mov. E.g. 5 = 5-day stack.
+        :type stretching_mov_overlap: bool
+        :param stretching_mov_overlap: Whether the moving reference window overlaps with the current stack.
+                                   Only used when ``stretching_reftype`` = mov.
+    :type used: bool
         :type used: bool
         :param used: Is the parameter set activated for the processing
         """
@@ -225,6 +300,9 @@ def declare_tables(prefix=None):
         stretching_sides = Column(String(255))
         stretching_max = Column(Float())
         stretching_nsteps = Column(Integer())
+        stretching_reftype = Column(String(255), default="static")
+        stretching_mov_stack = Column(Integer(), default=1)
+        stretching_mov_overlap = Column(Boolean(), default=False)
         used = Column(Boolean(), default=True)
 
         # Many-to-Many relationship with Filters
@@ -358,6 +436,7 @@ def declare_tables(prefix=None):
         used = Column(Boolean(True))
 
         # Many-to-Many relationship with MWCS parameter sets
+        cc_params = relationship("CCParam", secondary=cc_filter_assoc, back_populates="filters")
         mwcs_params = relationship("DvvMwcs", secondary=filter_mwcs_assoc, back_populates="filters")
         stretching_params = relationship("DvvStretching", secondary=filter_stretching_assoc, back_populates="filters")
         wct_params = relationship("DvvWct", secondary=filter_wct_assoc, back_populates="filters")
@@ -567,13 +646,49 @@ def declare_tables(prefix=None):
 
     ########################################################################
 
-    return sqlschema(Base, PrefixerBase,
-                     Filter, Job, Station, Config, DataAvailability, DvvMwcs, DvvMwcsDtt, DvvStretching, DvvWct, DvvWctDtt,
-                     filter_mwcs_assoc, mwcs_dtt_assoc, filter_stretching_assoc, filter_wct_assoc, wct_dtt_assoc)
+    return sqlschema(
+        Base=Base,
+        PrefixerBase=PrefixerBase,
+        Filter=Filter,
+        Job=Job,
+        Station=Station,
+        Config=Config,
+        DataAvailability=DataAvailability,
+        CCParam=CCParam,
+        cc_filter_assoc=cc_filter_assoc,
+        DvvMwcs=DvvMwcs,
+        DvvMwcsDtt=DvvMwcsDtt,
+        DvvStretching=DvvStretching,
+        DvvWct=DvvWct,
+        DvvWctDtt=DvvWctDtt,
+        filter_mwcs_assoc=filter_mwcs_assoc,
+        mwcs_dtt_assoc=mwcs_dtt_assoc,
+        filter_stretching_assoc=filter_stretching_assoc,
+        filter_wct_assoc=filter_wct_assoc,
+        wct_dtt_assoc=wct_dtt_assoc
+    )
     # end of declare_tables()
 
 
 # These module objects only use the prefix defined in db.ini.
 # They should be re-defined if the prefix is to be changed.
-Base, PrefixerBase, Filter, Job, Station, Config, DataAvailability, DvvMwcs, DvvMwcsDtt, DvvStretching, DvvWct, DvvWctDtt, \
-     filter_mwcs_assoc, mwcs_dtt_assoc, filter_stretching_assoc, filter_wct_assoc, wct_dtt_assoc = declare_tables()
+_schema = declare_tables()
+Base = _schema.Base
+PrefixerBase = _schema.PrefixerBase
+Filter = _schema.Filter
+Job = _schema.Job
+Station = _schema.Station
+Config = _schema.Config
+DataAvailability = _schema.DataAvailability
+CCParam = _schema.CCParam
+cc_filter_assoc = _schema.cc_filter_assoc
+DvvMwcs = _schema.DvvMwcs
+DvvMwcsDtt = _schema.DvvMwcsDtt
+DvvStretching = _schema.DvvStretching
+DvvWct = _schema.DvvWct
+DvvWctDtt = _schema.DvvWctDtt
+filter_mwcs_assoc = _schema.filter_mwcs_assoc
+mwcs_dtt_assoc = _schema.mwcs_dtt_assoc
+filter_stretching_assoc = _schema.filter_stretching_assoc
+filter_wct_assoc = _schema.filter_wct_assoc
+wct_dtt_assoc = _schema.wct_dtt_assoc
