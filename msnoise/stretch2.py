@@ -93,8 +93,7 @@ def get_moving_ref(data_full, current_day, mov_stack, n_stacks, overlap):
     # filter out invalid (negative) indices
     ref_indices = [i for i in ref_indices if i >= 0]
 
-    logger.info("Current day: %s (idx %d)" % (current_day, current_idx))
-    logger.info("Using ref indices: %s = dates %s" % (ref_indices, available_dates[ref_indices].tolist()))
+    logger.info("Stretching with moving REF: Current day: %s " % (current_day))
 
     if len(ref_indices) == 0:
         return None
