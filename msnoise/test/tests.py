@@ -1506,7 +1506,7 @@ def test_100000_msnoise_admin():
             "admin/job-dependencies/1 must return 200, 404, or 500"
 
         # ModelView list pages
-        for route in ["admin/datasource/", "admin/workflowstep/",
+        for route in ["admin/data_sources/", "admin/workflowstep/",
                       "admin/workflowlink/"]:
             response = test_client.get(route)
             assert response.status_code == 200, f"Error following route {route}"
@@ -1520,8 +1520,8 @@ def test_100000_msnoise_admin():
             assert response.status_code == 200, f"Error following route {route}"
 
         # WorkflowBuilderView
-        response = test_client.get("admin/workflowbuilder/")
-        assert response.status_code == 200, "Error following route admin/workflowbuilder/"
+        response = test_client.get("admin/workflow_builder/")
+        assert response.status_code == 200, "Error following route admin/workflow_builder/"
 
         # ConfigView bulk_update
         response = test_client.get("admin/config/bulk_update/")
@@ -2298,6 +2298,7 @@ def test_120041_msnoise_result_get_psd_rms():
 def test_120042_msnoise_result_export_bundle_and_verify():
     """export_bundle writes a valid bundle; from_bundle + verify() round-trips."""
     import tempfile
+    pytest.importorskip("yaml")
     db = connect()
     from ..results import MSNoiseResult
 
