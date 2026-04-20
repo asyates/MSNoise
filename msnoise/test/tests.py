@@ -1495,12 +1495,41 @@ def test_100000_msnoise_admin():
                       "admin/dataavailability/edit/?id=3"]:
             response = test_client.get(route, follow_redirects=True)
             assert response.status_code == 200, f"Error following route {route}"
-        #
-        # for route in ["admin/pairs.json",
-        #               "admin/data_availability_flags.json",
-        #               ]:
-        #     response = test_client.get(route, follow_redirects=True)
-        #     assert response.status_code == 200, f"Error following route {route}"
+
+        # Custom JSON API routes
+        response = test_client.get("admin/job-stats")
+        assert response.status_code == 200, "Error following route admin/job-stats"
+        assert response.is_json, "admin/job-stats must return JSON"
+
+        response = test_client.get("admin/job-dependencies/1")
+        assert response.status_code in (200, 404), \
+            "admin/job-dependencies/1 must return 200 or 404"
+
+        # ModelView list pages
+        for route in ["admin/datasource/", "admin/workflowstep/",
+                      "admin/workflowlink/"]:
+            response = test_client.get(route)
+            assert response.status_code == 200, f"Error following route {route}"
+
+        # ConfigSetView
+        for route in ["admin/config_sets/",
+                      "admin/config_sets/view/global/1/",
+                      "admin/config_sets/view/filter/1/",
+                      "admin/config_sets/edit/global/1/"]:
+            response = test_client.get(route, follow_redirects=True)
+            assert response.status_code == 200, f"Error following route {route}"
+
+        # WorkflowBuilderView
+        response = test_client.get("admin/workflowbuilder/")
+        assert response.status_code == 200, "Error following route admin/workflowbuilder/"
+
+        # ConfigView bulk_update
+        response = test_client.get("admin/config/bulk_update/")
+        assert response.status_code == 200, "Error following route admin/config/bulk_update/"
+
+        # StationXMLImportView
+        response = test_client.get("admin/import_stationxml/")
+        assert response.status_code == 200, "Error following route admin/import_stationxml/"
 
 
 @pytest.mark.order(999999)
@@ -2158,3 +2187,143 @@ def test_120033_msnoise_result_hasattr_gating():
 
     db.close()
 
+
+@pytest.mark.order(120036)
+def test_120036_msnoise_result_get_stretching():
+    """get_stretching returns dict or Dataset; single-key call returns Dataset."""
+    db = connect()
+    from ..results import MSNoiseResult
+    import xarray as xr
+    r = MSNoiseResult.from_ids(db, preprocess=1, cc=1, filter=1,
+                                stack=1, refstack=1, mwcs=1, mwcs_dtt=1,
+                                stretching=1)
+    all_s = r.get_stretching()
+    if not all_s:
+        pytest.skip("No stretching data available")
+    pair_k, comp_k, ms_k = next(iter(all_s))
+    ds = r.get_stretching(pair_k, comp_k, ms_k)
+    assert isinstance(ds, xr.Dataset), "get_stretching single-key must return Dataset"
+    db.close()
+
+
+@pytest.mark.order(120037)
+def test_120037_msnoise_result_get_wct():
+    """get_wct returns dict or Dataset; single-key call returns Dataset."""
+    db = connect()
+    from ..results import MSNoiseResult
+    import xarray as xr
+    r = MSNoiseResult.from_ids(db, preprocess=1, cc=1, filter=1,
+                                stack=1, refstack=1, wavelet=1)
+    all_w = r.get_wct()
+    if not all_w:
+        pytest.skip("No WCT data available")
+    pair_k, comp_k, ms_k = next(iter(all_w))
+    ds = r.get_wct(pair_k, comp_k, ms_k)
+    assert isinstance(ds, xr.Dataset), "get_wct single-key must return Dataset"
+    db.close()
+
+
+@pytest.mark.order(120038)
+def test_120038_msnoise_result_get_wct_dtt():
+    """get_wct_dtt returns dict or Dataset; single-key call returns Dataset."""
+    db = connect()
+    from ..results import MSNoiseResult
+    import xarray as xr
+    r = MSNoiseResult.from_ids(db, preprocess=1, cc=1, filter=1,
+                                stack=1, refstack=1, wavelet=1, wavelet_dtt=1)
+    all_w = r.get_wct_dtt()
+    if not all_w:
+        pytest.skip("No WCT-DTT data available")
+    pair_k, comp_k, ms_k = next(iter(all_w))
+    ds = r.get_wct_dtt(pair_k, comp_k, ms_k)
+    assert isinstance(ds, xr.Dataset), "get_wct_dtt single-key must return Dataset"
+    db.close()
+
+
+@pytest.mark.order(120039)
+def test_120039_msnoise_result_get_ccf_raw():
+    """get_ccf_raw returns dict keyed by (pair, comp, date) when no args given."""
+    db = connect()
+    from ..results import MSNoiseResult
+    r = MSNoiseResult.from_ids(db, preprocess=1, cc=1, filter=1)
+    raw = r.get_ccf_raw()
+    if not raw:
+        pytest.skip("No CCF-raw data available")
+    assert isinstance(raw, dict), "get_ccf_raw() with no args must return dict"
+    # Each value should be a DataArray or Dataset
+    import xarray as xr
+    for v in raw.values():
+        assert isinstance(v, (xr.DataArray, xr.Dataset)), \
+            "get_ccf_raw values must be xarray objects"
+        break  # one is enough
+    db.close()
+
+
+@pytest.mark.order(120040)
+def test_120040_msnoise_result_get_dvv_pairs():
+    """get_dvv_pairs returns dict or Dataset with per-pair dv/v."""
+    db = connect()
+    from ..results import MSNoiseResult
+    import xarray as xr
+    results = MSNoiseResult.list(db, "mwcs_dtt_dvv")
+    if not results:
+        pytest.skip("No mwcs_dtt_dvv results available")
+    r = results[0]
+    pairs_data = r.get_dvv_pairs()
+    if not pairs_data:
+        pytest.skip("get_dvv_pairs returned no data")
+    assert isinstance(pairs_data, (dict, xr.Dataset)), \
+        "get_dvv_pairs must return dict or Dataset"
+    db.close()
+
+
+@pytest.mark.order(120041)
+def test_120041_msnoise_result_get_psd_rms():
+    """get_psd_rms returns dict keyed by seed_id."""
+    db = connect()
+    from ..results import MSNoiseResult
+    r = MSNoiseResult.from_ids(db, psd=1, psd_rms=1)
+    all_rms = r.get_psd_rms()
+    if not all_rms:
+        pytest.skip("No PSD-RMS data available")
+    assert isinstance(all_rms, dict), "get_psd_rms() must return dict"
+    import xarray as xr
+    for v in all_rms.values():
+        assert isinstance(v, xr.Dataset), "get_psd_rms values must be Dataset"
+        break
+    db.close()
+
+
+@pytest.mark.order(120042)
+def test_120042_msnoise_result_export_bundle_and_verify():
+    """export_bundle writes a valid bundle; from_bundle + verify() round-trips."""
+    import tempfile
+    db = connect()
+    from ..results import MSNoiseResult
+
+    results = MSNoiseResult.list(db, "cc")
+    if not results:
+        pytest.skip("No CC results to bundle")
+    r = results[0]
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        bundle_dir = os.path.join(tmpdir, "bundle")
+        written = r.export_bundle(bundle_dir)
+        assert os.path.isdir(bundle_dir), "export_bundle must create output dir"
+
+        manifest = os.path.join(bundle_dir, "MANIFEST.json")
+        assert os.path.isfile(manifest), "export_bundle must write MANIFEST.json"
+
+        params_yaml = os.path.join(bundle_dir, "params.yaml")
+        assert os.path.isfile(params_yaml), "export_bundle must write params.yaml"
+
+        # from_bundle round-trip
+        rb = MSNoiseResult.from_bundle(bundle_dir)
+        assert rb is not None, "from_bundle must return an MSNoiseResult"
+        assert rb.category == r.category, "from_bundle category must match"
+
+        # verify integrity
+        ok = rb.verify()
+        assert ok, "verify() must pass for a freshly exported bundle"
+
+    db.close()
