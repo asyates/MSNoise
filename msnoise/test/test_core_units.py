@@ -417,3 +417,178 @@ class TestBuildPlotOutfile:
                                  ["preprocess_1"],
                                  mov_stack=("1D", "1D"))
         assert "m1D-1D" in out
+
+
+# ============================================================================
+# core/stations.py — pure-logic helpers (no DB, no ObsPy required)
+# ============================================================================
+
+class TestGetInterstationDistance:
+    def _sta(self, x, y):
+        return types.SimpleNamespace(X=x, Y=y)
+
+    def test_utm_hypot(self):
+        from ..core.stations import get_interstation_distance
+        s1 = self._sta(0.0, 0.0)
+        s2 = self._sta(3000.0, 4000.0)   # 5 km
+        dist = get_interstation_distance(s1, s2, coordinates="UTM")
+        assert dist == pytest.approx(5.0, rel=1e-6)
+
+    def test_utm_zero(self):
+        from ..core.stations import get_interstation_distance
+        s = self._sta(1234.0, 5678.0)
+        assert get_interstation_distance(s, s, coordinates="UTM") == pytest.approx(0.0)
+
+    def test_deg_uses_gps2dist(self):
+        from ..core.stations import get_interstation_distance
+        # Brussels → Paris ≈ 265 km
+        brussels = self._sta(4.35, 50.85)
+        paris    = self._sta(2.35, 48.85)
+        dist = get_interstation_distance(brussels, paris, coordinates="DEG")
+        assert 250 < dist < 290, f"Brussels-Paris distance out of range: {dist}"
+
+
+class TestToSds:
+    """Tests for stations.to_sds path builder (no DB, no ObsPy stream needed)."""
+
+    def _stats(self, net="BE", sta="UCC", loc="", chan="HHZ"):
+        return types.SimpleNamespace(
+            network=net, station=sta, location=loc, channel=chan
+        )
+
+    def test_format_structure(self):
+        from ..core.stations import to_sds
+        path = to_sds(self._stats(), year=2023, jday=42)
+        parts = path.split("/")
+        assert parts[0] == "2023"
+        assert parts[1] == "BE"
+        assert parts[2] == "UCC"
+        assert parts[3] == "HHZ.D"
+        assert parts[4] == "BE.UCC..HHZ.D.2023.042"
+
+    def test_year_zero_padded(self):
+        from ..core.stations import to_sds
+        path = to_sds(self._stats(), year=999, jday=1)
+        assert path.startswith("0999/")
+
+    def test_jday_zero_padded(self):
+        from ..core.stations import to_sds
+        path = to_sds(self._stats(), year=2023, jday=5)
+        assert path.endswith(".005")
+
+    def test_location_code(self):
+        from ..core.stations import to_sds
+        path = to_sds(self._stats(loc="00"), year=2023, jday=1)
+        assert "BE.UCC.00.HHZ" in path
+
+    def test_different_channels(self):
+        from ..core.stations import to_sds
+        for chan in ["BHZ", "LHN", "EHE"]:
+            path = to_sds(self._stats(chan=chan), year=2023, jday=1)
+            assert chan in path
+
+
+# ============================================================================
+# params.py — MSNoiseParams
+# ============================================================================
+
+class TestMSNoiseParams:
+    """Tests for MSNoiseParams construction, access, and serialisation."""
+
+    def _make_params(self):
+        from ..params import MSNoiseParams
+        from obspy.core.util.attribdict import AttribDict
+        p = MSNoiseParams()
+        p._set_lineage_names(["preprocess_1", "cc_1", "filter_1"])
+        p._add_layer("global",     AttribDict({"output_folder": "./out", "hpc": "N"}))
+        p._add_layer("preprocess", AttribDict({"preprocess_sampling_rate": 20.0}))
+        p._add_layer("cc",         AttribDict({"maxlag": 60.0, "winsorizing": 2.0}))
+        p._add_layer("filter",     AttribDict({"freqmin": 0.1, "freqmax": 1.0}))
+        return p
+
+    def test_category_access(self):
+        p = self._make_params()
+        assert p.cc.maxlag == 60.0
+        assert p.filter.freqmin == pytest.approx(0.1)
+
+    def test_global_underscore_alias(self):
+        p = self._make_params()
+        assert p.global_.hpc == "N"
+
+    def test_bracket_access(self):
+        p = self._make_params()
+        assert p["cc"].maxlag == 60.0
+
+    def test_missing_category_raises(self):
+        p = self._make_params()
+        with pytest.raises(AttributeError):
+            _ = p.mwcs
+
+    def test_missing_bracket_raises(self):
+        p = self._make_params()
+        with pytest.raises(KeyError):
+            _ = p["mwcs"]
+
+    def test_immutable(self):
+        p = self._make_params()
+        with pytest.raises(AttributeError):
+            p.cc = "oops"
+
+    def test_category_property(self):
+        p = self._make_params()
+        assert p.category == "filter"
+
+    def test_category_layer_property(self):
+        p = self._make_params()
+        assert p.category_layer.freqmin == pytest.approx(0.1)
+
+    def test_categories_list(self):
+        p = self._make_params()
+        assert p.categories == ["global", "preprocess", "cc", "filter"]
+
+    def test_lineage_names(self):
+        p = self._make_params()
+        assert p.lineage_names == ["preprocess_1", "cc_1", "filter_1"]
+
+    def test_step_name(self):
+        p = self._make_params()
+        assert p.step_name == "filter_1"
+
+    def test_as_flat_dict(self):
+        p = self._make_params()
+        d = p.as_flat_dict()
+        assert "maxlag" in d
+        assert "freqmin" in d
+        assert d["maxlag"] == 60.0
+
+    def test_repr(self):
+        p = self._make_params()
+        r = repr(p)
+        assert "MSNoiseParams" in r
+        assert "filter" in r
+
+    def test_yaml_roundtrip(self):
+        pytest.importorskip("yaml")
+        p = self._make_params()
+        from ..params import MSNoiseParams
+        yaml_str = p.to_yaml_string()
+        assert "cc" in yaml_str
+        p2 = MSNoiseParams.from_yaml_string(yaml_str)
+        assert p2.cc.maxlag == pytest.approx(60.0)
+        assert p2.filter.freqmin == pytest.approx(0.1)
+        assert p2.lineage_names == p.lineage_names
+
+    def test_yaml_roundtrip_file(self, tmp_path):
+        pytest.importorskip("yaml")
+        p = self._make_params()
+        from ..params import MSNoiseParams
+        fpath = str(tmp_path / "params.yaml")
+        p.to_yaml(fpath)
+        p2 = MSNoiseParams.from_yaml(fpath)
+        assert p2.cc.winsorizing == pytest.approx(2.0)
+
+    def test_empty_params_raises_on_category(self):
+        from ..params import MSNoiseParams
+        p = MSNoiseParams()
+        with pytest.raises(RuntimeError):
+            _ = p.category
