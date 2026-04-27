@@ -3,6 +3,7 @@
 __all__ = [
     "build_plot_outfile",
     "create_config_set",
+    "create_project_from_yaml",
     "delete_config_set",
     "get_config",
     "get_config_categories_definition",
@@ -268,6 +269,158 @@ def create_config_set(session, set_name):
     session.commit()
     return next_set_number
 
+
+
+def create_project_from_yaml(session, yaml_path):
+    """Seed a freshly-initialised database from a **project YAML** file.
+
+    The project YAML uses ``category_N`` keys so that multiple config sets of
+    the same category are unambiguous.  Each entry may declare an ``after``
+    field (string or list of strings) naming the ``category_N`` steps that
+    must precede it; one :class:`~msnoise.msnoise_table_def.WorkflowLink` row
+    is created per ``after`` entry.  Steps whose ``after`` target is absent
+    from the YAML produce a warning instead of an error, so partial YAMLs and
+    incremental DB builds are both supported.
+
+    Example::
+
+        msnoise_project_version: 1
+
+        global_1:
+          startdate: "2013-04-01"
+          enddate:   "2014-10-31"
+
+        preprocess_1:
+          after: global_1
+          cc_sampling_rate: 20.0
+
+        cc_1:
+          after: preprocess_1
+          cc_type_single_station_AC: PCC
+          whitening: "N"
+
+        filter_1:
+          after: cc_1          # single parent
+          freqmin: 1.0
+          freqmax: 2.0
+          AC: "Y"
+
+        filter_2:
+          after: cc_1          # fan-out from the same cc step
+          freqmin: 0.5
+          freqmax: 1.0
+          AC: "Y"
+
+        stack_1:
+          after: [filter_1, filter_2]
+          mov_stack: "(('2D','1D'))"
+
+        refstack_1:
+          after: [filter_1, filter_2]   # sibling of stack, not child
+          ref_begin: "2013-04-01"
+          ref_end:   "2014-10-31"
+
+        mwcs_1:
+          after: [stack_1, refstack_1]   # list: requires both parents
+          freqmin: 1.0
+          freqmax: 2.0
+
+    :param session: SQLAlchemy session (from :func:`~msnoise.core.db.connect`).
+    :param yaml_path: Path to a project YAML file.
+    :returns: ``(created_steps, warnings)`` — list of ``category_N`` strings
+        created and list of warning strings for missing ``after`` targets.
+    :raises ValueError: if the YAML is missing ``msnoise_project_version`` or
+        a key is not in ``category_N`` format.
+    """
+    import re
+    import logging
+    import yaml
+    from ..core.workflow import create_workflow_step, create_workflow_link
+
+    logger = logging.getLogger(__name__)
+
+    with open(yaml_path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+
+    if doc.get("msnoise_project_version") != 1:
+        raise ValueError(
+            f"{yaml_path!r} is not a project YAML "
+            f"(missing or wrong msnoise_project_version). "
+            f"Note: MSNoiseParams.to_yaml() produces a per-lineage YAML; "
+            f"use a project YAML with 'category_N' keys instead."
+        )
+
+    _SKIP = {"msnoise_project_version", "generated", "description"}
+    _KEY_RE = re.compile(r"^(?P<category>.+)_(?P<set_number>\d+)$")
+
+    # Parse entries, preserving YAML order (insertion order in py3.7+ dicts).
+    entries = []       # [(yaml_key, category, set_number_hint, after_list, overrides)]
+    for key, body in doc.items():
+        if key in _SKIP:
+            continue
+        m = _KEY_RE.match(key)
+        if not m:
+            raise ValueError(
+                f"Project YAML key {key!r} is not in 'category_N' format."
+            )
+        body = body or {}
+        after_raw = body.pop("after", None)
+        after_list = (
+            [after_raw] if isinstance(after_raw, str)
+            else list(after_raw) if after_raw
+            else []
+        )
+        entries.append((key, m.group("category"), int(m.group("set_number")),
+                        after_list, body))
+
+    # Pass 1: create config sets and workflow steps, collect step objects.
+    step_by_yaml_key = {}   # yaml_key → WorkflowStep
+    created_steps = []
+    warnings = []
+
+    for yaml_key, category, _set_number_hint, _after, overrides in entries:
+        set_number = create_config_set(session, category)
+        if set_number is None:
+            w = f"No config CSV for category {category!r} (key {yaml_key!r}) — skipped."
+            warnings.append(w)
+            logger.warning(w)
+            continue
+        for key, value in overrides.items():
+            if isinstance(value, list):
+                if value and isinstance(value[0], (list, tuple)):
+                    value = str(tuple(tuple(v) for v in value))
+                else:
+                    value = ",".join(str(v) for v in value)
+            result = update_config(session, key, str(value),
+                                   category=category, set_number=set_number)
+            if result is None:
+                w = f"{yaml_key!r}: unknown key {key!r} — ignored (typo?)."
+                warnings.append(w)
+                logger.warning(w)
+        step = create_workflow_step(
+            session, f"{category}_{set_number}", category, set_number,
+            description=f"Created from {yaml_path}",
+        )
+        step_by_yaml_key[yaml_key] = step
+        created_steps.append(f"{category}_{set_number}")
+
+    # Pass 2: create links from after declarations.
+    for yaml_key, _cat, _sn, after_list, _overrides in entries:
+        if yaml_key not in step_by_yaml_key:
+            continue   # step was skipped (no CSV)
+        to_step = step_by_yaml_key[yaml_key]
+        for parent_key in after_list:
+            if parent_key not in step_by_yaml_key:
+                w = (f"Link {parent_key!r} → {yaml_key!r}: "
+                     f"{parent_key!r} not found in this YAML — "
+                     f"add the link manually via the admin UI.")
+                warnings.append(w)
+                logger.warning(w)
+                continue
+            from_step = step_by_yaml_key[parent_key]
+            create_workflow_link(session, from_step.step_id, to_step.step_id)
+
+    return created_steps, warnings
 
 
 def delete_config_set(session, set_name, set_number):

@@ -292,13 +292,37 @@ def db():
 @click.option('--auto-workflow', is_flag=True, default=False,
               help='Automatically create all default config sets, workflow steps and links '
                    'without prompting.')
-def db_init(tech, auto_workflow):
+@click.option('--from-yaml', 'from_yaml', default=None, metavar='PATH',
+              help='Seed config sets and links from a project YAML (category_N + after keys).')
     """This command initializes the current folder to be a MSNoise Project
     by creating a database and a db.ini file."""
     click.echo('Launching the init')
     from ..s00_installer import main
     result = main(tech)
     if result != 0:
+        return
+
+    if from_yaml:
+        import os
+        if not os.path.isfile(from_yaml):
+            click.echo(f"Error: {from_yaml!r} not found.", err=True)
+            return
+        click.echo(f'\nSeeding project config from {from_yaml!r}...')
+        from ..core.db import connect
+        from ..core.config import create_project_from_yaml
+        db = connect()
+        try:
+            created, warnings = create_project_from_yaml(db, from_yaml)
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            db.close()
+            return
+        db.close()
+        click.echo(f'Created: {", ".join(created)}')
+        for w in warnings:
+            click.echo(f'Warning: {w}', err=True)
+        click.echo('Setup complete!' if not warnings
+                   else 'Setup complete (with warnings — check links in admin UI).')
         return
 
     if auto_workflow or click.confirm(
