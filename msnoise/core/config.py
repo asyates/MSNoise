@@ -4,6 +4,7 @@ __all__ = [
     "build_plot_outfile",
     "create_config_set",
     "create_project_from_yaml",
+    "export_project_to_yaml",
     "delete_config_set",
     "get_config",
     "get_config_categories_definition",
@@ -463,6 +464,128 @@ def create_project_from_yaml(session, yaml_path):
                 )
 
     return created_steps, warnings
+
+
+def export_project_to_yaml(session, yaml_path, only_non_defaults=True):
+    """Snapshot the current project DB state as a **project YAML** file.
+
+    The inverse of :func:`create_project_from_yaml`.  Reads all active
+    :class:`~msnoise.msnoise_table_def.WorkflowStep` rows, their config sets,
+    the :class:`~msnoise.msnoise_table_def.WorkflowLink` topology, all
+    :class:`~msnoise.msnoise_table_def.DataSource` rows, and all
+    :class:`~msnoise.msnoise_table_def.Station` rows, and writes a
+    ``msnoise_project_version: 1`` YAML that can be re-applied with
+    ``msnoise db init --from-yaml``.
+
+    :param session: SQLAlchemy session.
+    :param yaml_path: Destination path for the YAML file.
+    :param only_non_defaults: When ``True`` (default) only keys whose value
+        differs from the CSV default are written, keeping the file minimal.
+        Set to ``False`` to write every key explicitly.
+    :returns: Path string of the written file.
+    """
+    import os
+    import csv
+    import datetime
+    import yaml
+    from ..core.workflow import get_workflow_steps, get_workflow_links, get_workflow_order
+    from ..msnoise_table_def import DataSource, Station
+
+    # ── load CSV defaults once ────────────────────────────────────────────
+    _config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
+
+    def _csv_defaults(category):
+        path = os.path.join(_config_dir, f"config_{category}.csv")
+        if not os.path.exists(path):
+            return {}
+        with open(path, newline="", encoding="utf-8") as fh:
+            return {row["name"]: row["default"] for row in csv.DictReader(fh)}
+
+    # ── build step_name → parent step_names map from WorkflowLinks ───────
+    steps = get_workflow_steps(session)
+    links = get_workflow_links(session)
+
+    step_by_id = {s.step_id: s for s in steps}
+    parents_of = {s.step_name: [] for s in steps}   # step_name → [parent step_names]
+    for lnk in links:
+        child = step_by_id.get(lnk.to_step_id)
+        parent = step_by_id.get(lnk.from_step_id)
+        if child and parent:
+            parents_of[child.step_name].append(parent.step_name)
+
+    # ── sort steps by canonical workflow order ────────────────────────────
+    _order = get_workflow_order()
+    def _sort_key(s):
+        try:
+            return (_order.index(s.category), s.set_number)
+        except ValueError:
+            return (len(_order), s.set_number)
+
+    steps_sorted = sorted(steps, key=_sort_key)
+
+    # ── build YAML document (ordered dict preserves insertion order) ──────
+    doc = {
+        "msnoise_project_version": 1,
+        "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(
+            timespec="seconds") + "Z",
+    }
+
+    for step in steps_sorted:
+        entry = {}
+
+        # after
+        pnames = sorted(parents_of.get(step.step_name, []))
+        if len(pnames) == 1:
+            entry["after"] = pnames[0]
+        elif len(pnames) > 1:
+            entry["after"] = pnames
+
+        # config values
+        defaults = _csv_defaults(step.category)
+        rows = get_config_set_details(session, step.category, step.set_number,
+                                      format="list")
+        for row in rows:
+            name, value = row["name"], row["value"]
+            if only_non_defaults and value == defaults.get(name):
+                continue
+            entry[name] = value
+
+        doc[step.step_name] = entry
+
+    # ── data sources ──────────────────────────────────────────────────────
+    data_sources = session.query(DataSource).all()
+    if data_sources:
+        doc["data_sources"] = [
+            {
+                "name":           ds.name,
+                "uri":            ds.uri or "",
+                "data_structure": ds.data_structure or "SDS",
+                "auth_env":       ds.auth_env or "MSNOISE",
+            }
+            for ds in data_sources
+        ]
+
+    # ── stations ──────────────────────────────────────────────────────────
+    stations = session.query(Station).order_by(Station.net, Station.sta).all()
+    if stations:
+        doc["stations"] = [
+            {
+                "net":            s.net,
+                "sta":            s.sta,
+                "X":              s.X,
+                "Y":              s.Y,
+                "altitude":       s.altitude,
+                "coordinates":    s.coordinates or "DEG",
+                "data_source_id": 0,   # index into data_sources list above
+            }
+            for s in stations
+        ]
+
+    with open(yaml_path, "w", encoding="utf-8") as fh:
+        yaml.dump(doc, fh, default_flow_style=False, sort_keys=False,
+                  allow_unicode=True)
+
+    return yaml_path
 
 
 def delete_config_set(session, set_name, set_number):

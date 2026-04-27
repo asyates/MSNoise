@@ -217,4 +217,23 @@ Or, when data are not on a public FDSN service, list stations explicitly
      hand-written or generated from a paper template, consumed by
      ``msnoise db init --from-yaml``.  Represents a full project topology.
 
-See :func:`~msnoise.core.config.create_project_from_yaml` for the full API.
+See :func:`~msnoise.core.config.create_project_from_yaml` for the full import API
+and :func:`~msnoise.core.config.export_project_to_yaml` for the export API.
+
+Exporting an existing project
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The round-trip is symmetric.  To snapshot a configured project back to a
+project YAML::
+
+    msnoise db export-yaml project.yaml
+
+Only non-default values are written by default, keeping the file minimal and
+readable.  To write every key explicitly::
+
+    msnoise db export-yaml project.yaml --all-values
+
+The output is directly re-importable::
+
+    cd new_project/
+    msnoise db init --from-yaml ../old_project/project.yaml

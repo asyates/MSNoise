@@ -577,6 +577,24 @@ def db_clean_duplicates():
     db.close()
 
 
+@db.command(name="export-yaml")
+@click.argument("output", default="project.yaml", metavar="PATH")
+@click.option("--all-values", is_flag=True, default=False,
+              help="Write every config key, not just non-default values.")
+def db_export_yaml(output, all_values):
+    """Export the current project config to a project YAML file.
+
+    The output can be re-applied to a fresh DB with:
+    msnoise db init --from-yaml PATH
+    """
+    from ..core.db import connect
+    from ..core.config import export_project_to_yaml
+    db = connect()
+    path = export_project_to_yaml(db, output, only_non_defaults=not all_values)
+    db.close()
+    click.echo(f"Project exported to {path!r}")
+
+
 @db.command(name="dump")
 @click.option("--format", default="csv")
 def db_dump(format):
