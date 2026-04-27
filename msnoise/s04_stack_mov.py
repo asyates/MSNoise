@@ -197,6 +197,9 @@ def main(stype, loglevel="INFO"):
                                "falling back to keep_days daily stacks")
                 c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
                                           sta1, sta2, components, all_days)
+                if not len(c):
+                    logger.warning("No data found for %s-%s" % (sta1, sta2))
+                    continue
                 dr = c.resample(times="1D").mean()
                 del c  # free raw CCF data — dr is all we need from here
 
