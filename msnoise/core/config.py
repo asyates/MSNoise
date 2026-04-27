@@ -350,7 +350,7 @@ def create_project_from_yaml(session, yaml_path):
             f"use a project YAML with 'category_N' keys instead."
         )
 
-    _SKIP = {"msnoise_project_version", "generated", "description"}
+    _SKIP = {"msnoise_project_version", "generated", "description", "data_sources", "stations"}
     _KEY_RE = re.compile(r"^(?P<category>.+)_(?P<set_number>\d+)$")
 
     # Parse entries, preserving YAML order (insertion order in py3.7+ dicts).
@@ -419,6 +419,48 @@ def create_project_from_yaml(session, yaml_path):
                 continue
             from_step = step_by_yaml_key[parent_key]
             create_workflow_link(session, from_step.step_id, to_step.step_id)
+
+    # Pass 3: data sources
+    for ds_dict in doc.get("data_sources", []):
+        from ..core.stations import add_data_source
+        add_data_source(
+            session,
+            name=ds_dict["name"],
+            uri=ds_dict.get("uri", ""),
+            data_structure=ds_dict.get("data_structure", "SDS"),
+            auth_env=ds_dict.get("auth_env", "MSNOISE"),
+        )
+
+    # Pass 4: stations — endpoint fetch (level=response recommended so that
+    # import_stationxml saves responses to response_path automatically) or
+    # explicit list (same format as MSNoiseResult bundle provenance export,
+    # so bundle provenance can be copy-pasted directly into a project YAML).
+    stations_section = doc.get("stations")
+    if stations_section:
+        from ..core.stations import import_stationxml, update_station
+        if isinstance(stations_section, dict):
+            endpoint = stations_section.get("station_endpoint")
+            if endpoint:
+                try:
+                    created_s, updated_s, _ = import_stationxml(session, endpoint)
+                    logger.info(
+                        f"Stations via endpoint: {created_s} created, "
+                        f"{updated_s} updated."
+                    )
+                except Exception as e:
+                    w = f"station_endpoint fetch failed: {e}"
+                    warnings.append(w)
+                    logger.warning(w)
+        elif isinstance(stations_section, list):
+            for s in stations_section:
+                update_station(
+                    session,
+                    net=s["net"], sta=s["sta"],
+                    X=s["X"], Y=s["Y"],
+                    altitude=s.get("altitude", 0.0),
+                    coordinates=s.get("coordinates", "DEG"),
+                    used=s.get("used", True),
+                )
 
     return created_steps, warnings
 
