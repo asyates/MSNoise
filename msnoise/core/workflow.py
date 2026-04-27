@@ -958,7 +958,19 @@ def bulk_upsert_jobs(session, to_insert, to_bump_refs, now, *, bump_flag_filter=
     _CHUNK = 900
 
     if to_insert:
-        session.bulk_insert_mappings(Job, to_insert)
+        try:
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+            stmt = pg_insert(Job).values(to_insert).on_conflict_do_nothing()
+            session.execute(stmt)
+        except Exception:
+            # fallback for SQLite / MySQL
+            from sqlalchemy import insert as sa_insert
+            for chunk_start in range(0, len(to_insert), _CHUNK):
+                chunk = to_insert[chunk_start:chunk_start + _CHUNK]
+                try:
+                    session.bulk_insert_mappings(Job, chunk)
+                except Exception:
+                    pass
         created = len(to_insert)
 
     if to_bump_refs:
