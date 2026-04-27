@@ -294,6 +294,7 @@ def db():
                    'without prompting.')
 @click.option('--from-yaml', 'from_yaml', default=None, metavar='PATH',
               help='Seed config sets and links from a project YAML (category_N + after keys).')
+def db_init(tech, auto_workflow, from_yaml):
     """This command initializes the current folder to be a MSNoise Project
     by creating a database and a db.ini file."""
     click.echo('Launching the init')
