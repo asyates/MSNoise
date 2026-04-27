@@ -860,10 +860,14 @@ def _get_or_create_lineage_id(session, lineage_str):
         return row.lineage_id
 
     # 4. Truly new — insert and flush to get the generated ID
-    row = Lineage(lineage_str=lineage_str)
-    session.add(row)
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    stmt = pg_insert(Lineage).values(lineage_str=lineage_str).on_conflict_do_nothing()
+    session.execute(stmt)
     session.flush()
-    return row.lineage_id
+    # Re-query to get the ID whether we inserted or another thread beat us
+    with session.no_autoflush:
+        row = session.query(Lineage).filter(Lineage.lineage_str == lineage_str).first()
+    return row.lineage_id if row else None
 
 
 def _lineage_id_for(session, lineage_str):
