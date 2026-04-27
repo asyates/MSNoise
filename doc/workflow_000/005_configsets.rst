@@ -214,7 +214,8 @@ Or, when data are not on a public FDSN service, list stations explicitly
      :class:`~msnoise.results.MSNoiseResult`.  Represents one pipeline path.
 
    * **Project seed** (``msnoise_project_version: 1``, ``filter_1:`` keys):
-     hand-written or generated from a paper template, consumed by
+     hand-written, generated from a paper template, or exported from an
+     existing project with ``msnoise db export-yaml``.  Consumed by
      ``msnoise db init --from-yaml``.  Represents a full project topology.
 
 See :func:`~msnoise.core.config.create_project_from_yaml` for the full import API

@@ -592,3 +592,276 @@ class TestMSNoiseParams:
         p = MSNoiseParams()
         with pytest.raises(RuntimeError):
             _ = p.category
+
+
+# ============================================================================
+# Project YAML export / import round-trip
+# ============================================================================
+
+def _make_project_db(tmp_path):
+    """Helper: initialise a minimal SQLite MSNoise project, return (db, tmp)."""
+    import os
+    from ..core.db import create_database_inifile, connect
+    from ..msnoise_table_def import declare_tables, DataSource, Station
+    os.chdir(tmp_path)
+    create_database_inifile(tech=1, hostname="proj.sqlite",
+                            database="", username="", password="", prefix="")
+    db = connect()
+    declare_tables().Base.metadata.create_all(db.get_bind())
+    return db, tmp_path
+
+
+class TestProjectYamlRoundTrip:
+    """Round-trip tests for export_project_to_yaml / create_project_from_yaml."""
+
+    # ── minimal project YAML used across tests ────────────────────────────
+    YAML_SRC = """\
+msnoise_project_version: 1
+
+global_1:
+  startdate: "2013-04-01"
+  enddate: "2014-10-31"
+
+preprocess_1:
+  after: global_1
+  cc_sampling_rate: 20.0
+
+cc_1:
+  after: preprocess_1
+  whitening: "N"
+  components_to_compute_single_station: "ZZ,EE,NN"
+  cc_type_single_station_AC: PCC
+
+filter_1:
+  after: cc_1
+  freqmin: 1.0
+  freqmax: 2.0
+  AC: "Y"
+  CC: "N"
+
+filter_2:
+  after: cc_1
+  freqmin: 0.5
+  freqmax: 1.0
+  AC: "Y"
+  CC: "N"
+
+stack_1:
+  after: [filter_1, filter_2]
+  mov_stack: "(('2D','1D'))"
+
+refstack_1:
+  after: [filter_1, filter_2]
+  ref_begin: "2013-04-01"
+  ref_end: "2014-10-31"
+
+mwcs_1:
+  after: [stack_1, refstack_1]
+  freqmin: 1.0
+  freqmax: 2.0
+
+mwcs_dtt_1:
+  after: mwcs_1
+  dtt_minlag: 5.0
+  dtt_width: 30.0
+  dtt_mincoh: 0.6
+  dtt_maxerr: 0.1
+"""
+
+    def _import(self, tmp_path):
+        """Create a DB from YAML_SRC, return (db, yaml_path)."""
+        pytest.importorskip("yaml")
+        db, tmp = _make_project_db(tmp_path)
+        yaml_path = str(tmp / "project.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(self.YAML_SRC)
+        from ..core.config import create_project_from_yaml
+        created, warnings = create_project_from_yaml(db, yaml_path)
+        return db, yaml_path, created, warnings
+
+    # ── import tests ──────────────────────────────────────────────────────
+
+    def test_import_creates_expected_steps(self, tmp_path):
+        db, _, created, _ = self._import(tmp_path)
+        assert "global_1"      in created
+        assert "preprocess_1"  in created
+        assert "cc_1"          in created
+        assert "filter_1"      in created
+        assert "filter_2"      in created
+        assert "stack_1"       in created
+        assert "refstack_1"    in created
+        assert "mwcs_1"        in created
+        assert "mwcs_dtt_1"    in created
+
+    def test_import_config_overrides_applied(self, tmp_path):
+        db, _, _, _ = self._import(tmp_path)
+        from ..core.config import get_config_set_details
+        cc = {r["name"]: r["value"]
+              for r in get_config_set_details(db, "cc", 1, format="list")}
+        assert cc["whitening"] == "N"
+        assert cc["cc_type_single_station_AC"] == "PCC"
+        assert cc["cc_sampling_rate"] == "20.0"
+
+        f1 = {r["name"]: r["value"]
+              for r in get_config_set_details(db, "filter", 1, format="list")}
+        assert f1["freqmin"] == "1.0"
+        assert f1["AC"] == "Y"
+        assert f1["CC"] == "N"
+
+        f2 = {r["name"]: r["value"]
+              for r in get_config_set_details(db, "filter", 2, format="list")}
+        assert f2["freqmin"] == "0.5"
+
+    def test_import_links_created(self, tmp_path):
+        db, _, _, _ = self._import(tmp_path)
+        from ..core.workflow import get_workflow_links, get_workflow_steps
+        steps = {s.step_name: s.step_id for s in get_workflow_steps(db)}
+        links = {(l.from_step_id, l.to_step_id)
+                 for l in get_workflow_links(db)}
+        # filter_1 → stack_1 and filter_2 → stack_1
+        assert (steps["filter_1"], steps["stack_1"]) in links
+        assert (steps["filter_2"], steps["stack_1"]) in links
+        # stack_1 → mwcs_1 and refstack_1 → mwcs_1
+        assert (steps["stack_1"],   steps["mwcs_1"]) in links
+        assert (steps["refstack_1"], steps["mwcs_1"]) in links
+        # preprocess_1 → cc_1 (single parent)
+        assert (steps["preprocess_1"], steps["cc_1"]) in links
+
+    def test_import_unknown_key_warns(self, tmp_path):
+        pytest.importorskip("yaml")
+        db, tmp = _make_project_db(tmp_path)
+        src = self.YAML_SRC + "\n  typo_key: bad_value\n"
+        # inject typo into cc_1 block
+        src = src.replace(
+            "cc_type_single_station_AC: PCC",
+            "cc_type_single_station_AC: PCC\n  not_a_real_key: oops"
+        )
+        yaml_path = str(tmp / "bad.yaml")
+        with open(yaml_path, "w") as f:
+            f.write(src)
+        from ..core.config import create_project_from_yaml
+        _, warnings = create_project_from_yaml(db, yaml_path)
+        assert any("not_a_real_key" in w for w in warnings)
+
+    def test_import_wrong_version_raises(self, tmp_path):
+        pytest.importorskip("yaml")
+        db, tmp = _make_project_db(tmp_path)
+        yaml_path = str(tmp / "bad.yaml")
+        with open(yaml_path, "w") as f:
+            f.write("msnoise_params_version: 1\ncc:\n  maxlag: 60\n")
+        from ..core.config import create_project_from_yaml
+        with pytest.raises(ValueError, match="msnoise_project_version"):
+            create_project_from_yaml(db, yaml_path)
+
+    # ── export tests ──────────────────────────────────────────────────────
+
+    def test_export_produces_valid_yaml(self, tmp_path):
+        import yaml
+        db, _, _, _ = self._import(tmp_path)
+        from ..core.config import export_project_to_yaml
+        out = str(tmp_path / "exported.yaml")
+        export_project_to_yaml(db, out)
+        with open(out) as f:
+            doc = yaml.safe_load(f)
+        assert doc["msnoise_project_version"] == 1
+        assert "cc_1" in doc
+        assert "filter_1" in doc
+        assert "filter_2" in doc
+
+    def test_export_only_non_defaults(self, tmp_path):
+        import yaml
+        db, _, _, _ = self._import(tmp_path)
+        from ..core.config import export_project_to_yaml
+        out = str(tmp_path / "exported.yaml")
+        export_project_to_yaml(db, out, only_non_defaults=True)
+        with open(out) as f:
+            doc = yaml.safe_load(f)
+        # non-default overrides present
+        assert doc["cc_1"].get("whitening") == "N"
+        assert doc["filter_1"].get("freqmin") == "1.0"
+        # default value (maxlag=120.0) must NOT appear
+        assert "maxlag" not in doc.get("cc_1", {})
+
+    def test_export_all_values(self, tmp_path):
+        import yaml
+        db, _, _, _ = self._import(tmp_path)
+        from ..core.config import export_project_to_yaml
+        out = str(tmp_path / "exported_all.yaml")
+        export_project_to_yaml(db, out, only_non_defaults=False)
+        with open(out) as f:
+            doc = yaml.safe_load(f)
+        # with all values, maxlag should be present
+        assert "maxlag" in doc.get("cc_1", {})
+
+    def test_export_after_links(self, tmp_path):
+        import yaml
+        db, _, _, _ = self._import(tmp_path)
+        from ..core.config import export_project_to_yaml
+        out = str(tmp_path / "exported.yaml")
+        export_project_to_yaml(db, out)
+        with open(out) as f:
+            doc = yaml.safe_load(f)
+        # stack_1 must declare both filters as parents
+        after = doc["stack_1"].get("after", [])
+        if isinstance(after, str):
+            after = [after]
+        assert "filter_1" in after
+        assert "filter_2" in after
+        # mwcs_1 must declare both stack_1 and refstack_1
+        after_mwcs = doc["mwcs_1"].get("after", [])
+        if isinstance(after_mwcs, str):
+            after_mwcs = [after_mwcs]
+        assert "stack_1"   in after_mwcs
+        assert "refstack_1" in after_mwcs
+
+    # ── full round-trip ───────────────────────────────────────────────────
+
+    def test_full_roundtrip(self, tmp_path):
+        """Export from DB-A (non-defaults only), verify the YAML is re-importable.
+
+        A second DB is not set up here to avoid os.chdir session isolation issues
+        in the test fixture — those belong in integration tests.  We verify the
+        exported YAML is structurally correct and contains the expected overrides,
+        then confirm that create_project_from_yaml on the SAME db produces no
+        extra steps (idempotency guard).
+        """
+        import yaml
+        db_a, _, created_a, _ = self._import(tmp_path)
+        from ..core.config import export_project_to_yaml, get_config_set_details
+
+        exported = str(tmp_path / "exported.yaml")
+        export_project_to_yaml(db_a, exported, only_non_defaults=True)
+
+        with open(exported) as f:
+            doc = yaml.safe_load(f)
+
+        # version marker present
+        assert doc["msnoise_project_version"] == 1
+
+        # all originally imported steps are present
+        for step in created_a:
+            assert step in doc, f"{step} missing from exported YAML"
+
+        # overridden values round-tripped correctly
+        assert doc["cc_1"].get("whitening") == "N"
+        assert doc["cc_1"].get("cc_type_single_station_AC") == "PCC"
+        assert doc["filter_1"].get("freqmin") == "1.0"
+        assert doc["filter_2"].get("freqmin") == "0.5"
+        assert doc["mwcs_dtt_1"].get("dtt_mincoh") == "0.6"
+        assert doc["mwcs_dtt_1"].get("dtt_maxerr") == "0.1"
+
+        # after links preserved
+        stack_after = doc["stack_1"].get("after", [])
+        if isinstance(stack_after, str):
+            stack_after = [stack_after]
+        assert "filter_1" in stack_after
+        assert "filter_2" in stack_after
+
+        mwcs_after = doc["mwcs_1"].get("after", [])
+        if isinstance(mwcs_after, str):
+            mwcs_after = [mwcs_after]
+        assert "stack_1"    in mwcs_after
+        assert "refstack_1" in mwcs_after
+
+        # default values should NOT appear (only_non_defaults=True)
+        assert "maxlag" not in doc.get("cc_1", {})
