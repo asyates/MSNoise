@@ -59,7 +59,8 @@ dependencies = [
     "xarray",
     "pooch",
     "tables",             # PyTables: backend for pd.read_hdf/to_hdf in get_results_all and export_allcorr
-    "netcdf4"]
+    "netcdf4",
+    "yaml"]
 
 [project.optional-dependencies]
 doc = [
