@@ -171,11 +171,11 @@ a single broadband station is available:
 
 .. math::
 
-    C_{i\\alpha, i\\beta}(\\tau) = \\int_{-\\infty}^{\\infty}
-        d_{i\\alpha}(t)\\, d_{i\\beta}(t + \\tau)\\, dt,
-        \\qquad \\alpha \\neq \\beta
+    C_{i\alpha, i\beta}(\tau) = \int_{-\infty}^{\infty}
+        d_{i\alpha}(t)\, d_{i\beta}(t + \tau)\, dt,
+        \qquad \alpha \neq \beta
 
-where :math:`\\alpha, \\beta \\in \\{Z, N, E\\}` are distinct component labels at
+where :math:`\alpha, \beta \in \{Z, N, E\}` are distinct component labels at
 the same station :math:`i`.  The SC function reconstructs an approximation to
 the Green's function between two virtual sensors co-located at the same site
 but oriented differently, making it sensitive to surface-wave velocity changes
@@ -200,11 +200,11 @@ zero-lag cross-correlation of a trace with a time-delayed copy of itself:
 
 .. math::
 
-    C_{ii}(\\tau) = \\int_{-\\infty}^{\\infty}
-        d_i(t)\\, d_i(t + \\tau)\\, dt
+    C_{ii}(\tau) = \int_{-\infty}^{\infty}
+        d_i(t)\, d_i(t + \tau)\, dt
 
 which is equivalent to the inverse Fourier transform of the power spectrum
-:math:`|X_i(\\nu)|^2`.  The ACF provides a *zero-offset reflection response*
+:math:`|X_i(\nu)|^2`.  The ACF provides a *zero-offset reflection response*
 beneath the station — the same signal that would be recorded if the station
 were both source and receiver (:footcite:t:`Romero2018`).  AC was used for
 volcano monitoring alongside SC by :footcite:t:`DePlaen2016`, and the
