@@ -4,7 +4,7 @@
 Wavelet DTT Computation
 
 This module computes dv/v from the saved WCT (Wavelet Coherence Transform)
-results (:footcite:t:`Grinsted2004`; CWT algorithm: :footcite:t:`TorrenceCompo1998`)
+results (:footcite:t:`Mao2020`; WCT: :footcite:t:`Grinsted2004`; CWT: :footcite:t:`TorrenceCompo1998`)
 using a lineage-based job approach. Each job processes one station
 pair across all components and moving stacks.
 

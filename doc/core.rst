@@ -46,6 +46,8 @@ Computation (CC / MWCS / WCT)
 Preprocessing
 -------------
 
+.. footbibliography::
+
 .. automodule:: msnoise.core.preprocessing
    :members:
 

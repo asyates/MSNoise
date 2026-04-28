@@ -5,7 +5,8 @@ Wavelet Coherence Transform (WCT) Computation
 This script performs the computation of the Wavelet Coherence Transform (WCT)
 (:footcite:t:`Grinsted2004`), a tool used to analyze the correlation between
 two time series in the time-frequency domain. The underlying CWT uses the
-Morlet wavelet following :footcite:t:`TorrenceCompo1998`. The script supports parallel processing and interacts with a database to manage job statuses.
+Morlet wavelet following :footcite:t:`TorrenceCompo1998`. When ``wct_compute_dtt``
+is enabled, traveltime delays are measured following :footcite:t:`Mao2020`. The script supports parallel processing and interacts with a database to manage job statuses.
 
 Filter Configuration Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~

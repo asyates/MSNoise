@@ -513,6 +513,10 @@ def prepare_ref_wct(trace_ref, fs, ns=3, nt=0.25, vpo=12,
 def apply_wct(ref_wct_data, trace_current, ns=3, nt=0.25):
     """Compute WCT for one current-day trace given pre-computed reference data.
 
+    Implements the wavelet cross-spectrum following :footcite:t:`Grinsted2004`.
+    The time-delay ``WXdt = phase(WXspec) / (2πf)`` follows
+    :footcite:t:`Mao2020` (their eq. 1).
+
     :param ref_wct_data: Tuple returned by :func:`prepare_ref_wct`.
     :param trace_current: Current-day signal (1-D numpy array, same length as ref).
     :param ns: Scale-axis smoothing parameter (must match the value used in
@@ -551,7 +555,8 @@ def apply_wct(ref_wct_data, trace_current, ns=3, nt=0.25):
 
 def xwt(trace_ref, trace_current, fs, ns=3, nt=0.25, vpo=12,
         freqmin=0.1, freqmax=8.0, nptsfreq=100, wavelet_type=("Morlet", 6.)):
-    """Wavelet Coherence Transform (WCT) between two time series.
+    """Wavelet Coherence Transform (WCT) between two time series
+    (:footcite:t:`Grinsted2004`; traveltime estimation: :footcite:t:`Mao2020`).
 
     Convenience wrapper around :func:`prepare_ref_wct` + :func:`apply_wct`.
     Use those two functions directly in hot loops (Mode A fixed-REF) to avoid
@@ -578,8 +583,13 @@ def xwt(trace_ref, trace_current, fs, ns=3, nt=0.25, vpo=12,
 
 def compute_wct_dtt(freqs, tvec, WXamp, Wcoh, delta_t, lag_min=5, coda_cycles=20,
                     mincoh=0.5, maxdt=0.2, min_nonzero=0.25, freqmin=0.1, freqmax=2.0):
-    """
-    Compute dv/v and associated errors from wavelet coherence transform results.
+    """Compute dv/v and associated errors from WCT results following
+    :footcite:t:`Mao2020`.
+
+    For each frequency band, fits a weighted linear regression
+    ``delta_t(t) = -(dv/v) * t`` using log-amplitude weights from the
+    cross-wavelet spectrum (their eq. 3–4).
+
 
     :param freqs: Frequency values from the WCT.
     :param tvec: Time axis.

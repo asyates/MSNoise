@@ -236,6 +236,33 @@ See :ref:`aboutdbandperformances` for guidance on when a dedicated server
 pays off over MSNoiseDB.
 
 
+
+Citing the dependencies
+========================
+
+MSNoise builds on a number of open-source scientific Python tools.  If you
+use MSNoise in published research, please also acknowledge these packages:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 75
+
+   * - Package
+     - Citation
+   * - ObsPy
+     - :footcite:t:`Beyreuther2010`; :footcite:t:`Megies2011`
+   * - NumPy
+     - :footcite:t:`Oliphant2006`
+   * - SciPy
+     - :footcite:t:`Jones2001`
+   * - Matplotlib
+     - :footcite:t:`Hunter2007`
+   * - pandas
+     - :footcite:t:`McKinney2012`
+
+.. footbibliography::
+
+
 Building this documentation
 ============================
 
