@@ -301,11 +301,11 @@ def smoothCFS(cfs, scales, dt, ns, nt):
 
 # ── Wavelet classes and CWT ──────────────────────────────────────────────────
 # Self-contained implementation of the mother wavelets and CWT used by the
-# WCT pipeline (s08_compute_wct).  Algorithm: Torrence & Compo (1998, BAMS),
+# WCT pipeline (s08_compute_wct).  Algorithm: :footcite:t:`TorrenceCompo1998`,
 # Tables 1–2.
 
 class _Morlet:
-    """Morlet wavelet (Torrence & Compo 1998, Table 1, row 1).
+    """Morlet wavelet (:footcite:t:`TorrenceCompo1998`, Table 1, row 1).
 
     :param f0: Central angular frequency. Default 6.
     """
@@ -350,7 +350,7 @@ class _Morlet:
 
 
 class _Paul:
-    """Paul wavelet of order *m* (Torrence & Compo 1998, Table 1, row 2)."""
+    """Paul wavelet of order *m* (:footcite:t:`TorrenceCompo1998`, Table 1, row 2)."""
     name = "Paul"
 
     def __init__(self, m=4):
@@ -374,7 +374,7 @@ class _Paul:
 
 
 class _DOG:
-    """Derivative-of-Gaussian wavelet of order *m* (T&C 1998, Table 1, row 3)."""
+    """Derivative-of-Gaussian wavelet of order *m* (:footcite:t:`TorrenceCompo1998`, Table 1, row 3)."""
     name = "DOG"
 
     def __init__(self, m=2):
@@ -408,7 +408,7 @@ class _MexicanHat(_DOG):
 
 
 def _cwt(signal, dt, dj=1 / 12, s0=-1, J=-1, wavelet=None, freqs=None):
-    """Continuous wavelet transform (Torrence & Compo 1998).
+    """Continuous wavelet transform (:footcite:t:`TorrenceCompo1998`).
 
     Uses FFT-domain convolution for efficiency.
 

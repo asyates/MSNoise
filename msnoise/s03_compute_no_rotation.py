@@ -30,8 +30,8 @@ configuration parameters: ``cc_type`` (inter-station CC),
 Cross-Correlation (CC)
 ----------------------
 
-The classic ambient-noise cross-correlation (Shapiro & Campillo 2004;
-Bensen et al. 2007) is computed using the tiled-batch implementation
+The classic ambient-noise cross-correlation (:footcite:t:`ShapiroCampillo2004`;
+:footcite:t:`Bensen2007`) is computed using the tiled-batch implementation
 :func:`~msnoise.core.compute.myCorr2`.
 
 **Shared pre-processing per time window** (CC and SC modes — NOT AC):
@@ -87,32 +87,21 @@ The IFFT, folding and optional normalisation follow in all cases:
 product of RMS energies :math:`(e_i \cdot e_j)`; ``MAX`` — divide by
 the CCF maximum; ``ABSMAX`` — divide by the absolute maximum.
 
-**References**
+.. rubric:: References
 
-Bensen, G. D., Ritzwoller, M. H., Barmin, M. P., Levshin, A. L., Lin, F.,
-Moschetti, M. P., Shapiro, N. M., & Yang, Y. (2007).
-Processing seismic ambient noise data to obtain reliable broad-band surface
-wave dispersion measurements.
-*Geophysical Journal International*, 169(3), 1239–1260.
-https://doi.org/10.1111/j.1365-246X.2007.03374.x
-
-Shapiro, N. M., & Campillo, M. (2004).
-Emergence of broadband Rayleigh waves from correlations of the ambient
-seismic noise.
-*Geophysical Research Letters*, 31(7), L07614.
-https://doi.org/10.1029/2004GL019491
+.. footcite:p:`ShapiroCampillo2004,Bensen2007`
 
 
 Phase Cross-Correlation (PCC2)
 ------------------------------
 
-Phase Cross-Correlation (Schimmel 1999; Schimmel et al. 2011) is an
+Phase Cross-Correlation (:footcite:t:`Schimmel1999`; :footcite:t:`Schimmel2011`) is an
 alternative to the classic GNCC that discards amplitude information entirely
 at every sample, making it intrinsically robust against transient noise
 (earthquakes, instrumental glitches) *without* requiring explicit temporal
 normalisation such as one-bit or clipping.  MSNoise implements PCC version 2
-(PCC2), the FFT-accelerated formulation introduced by Ventosa et al. (2019,
-2023) as part of the FastPCC package.  The implementation is self-contained
+(PCC2), the FFT-accelerated formulation introduced by :footcite:t:`Ventosa2019` and
+:footcite:t:`Ventosa2023` as part of the FastPCC package.  The implementation is self-contained
 in :func:`~msnoise.core.compute.pcc_xcorr` and does **not** depend on the
 ``phasecorr`` or ``fastpcc`` external packages.
 
@@ -165,28 +154,9 @@ For each trace the shared ``_data_bp`` (already bandpassed to
 6. **Normalisation** — ``MAX`` or ``ABSMAX`` as for CC; ``POW`` is silently
    ignored because amplitudes are discarded in step 2.
 
-**References**
+.. rubric:: References
 
-Schimmel, M. (1999).
-Phase cross-correlations: design, comparisons, and applications.
-*Bulletin of the Seismological Society of America*, 89(5), 1366–1378.
-https://doi.org/10.1785/BSSA0890051366
-
-Schimmel, M., Stutzmann, E., & Gallart, J. (2011).
-Using instantaneous phase coherence for signal extraction from ambient noise
-data at a local to a global scale.
-*Geophysical Journal International*, 184(1), 494–506.
-https://doi.org/10.1111/j.1365-246X.2010.04861.x
-
-Ventosa, S., Schimmel, M., & Stutzmann, E. (2019).
-Towards the processing of large data volumes with phase cross-correlation.
-*Seismological Research Letters*, 90(4), 1663–1669.
-https://doi.org/10.1785/0220190022
-
-Ventosa, S., & Schimmel, M. (2023).
-FastPCC: Fast phase cross-correlation algorithm for large seismic datasets.
-*IEEE Transactions on Geoscience and Remote Sensing*, 61, 1–17.
-https://doi.org/10.1109/TGRS.2023.3294302
+.. footcite:p:`Schimmel1999,Schimmel2011,Ventosa2019,Ventosa2023`
 
 
 Stacking daily windows
@@ -203,12 +173,10 @@ linear mean or Phase-Weighted Stack (PWS; Schimmel & Paulssen 1997):
     PWS is provided as an experimental option.  It has not been
     systematically cross-validated.  Use with caution.
 
-Schimmel, M., & Paulssen, H. (1997).
-Noise reduction and detection of weak, coherent signals through
-phase-weighted stacks.
-*Geophysical Journal International*, 130(2), 497–505.
-https://doi.org/10.1111/j.1365-246X.1997.tb05664.x
+.. footcite:p:`Schimmel1997`
 
+
+.. footbibliography::
 
 Configuration Parameters
 ------------------------
