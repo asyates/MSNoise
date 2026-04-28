@@ -43,7 +43,7 @@ them side-by-side for a direct comparison.
 ###############################################################################
 # ## 0 · Imports
 
-%matplotlib inline
+# %matplotlib inline
 import os
 import shutil
 import logging
