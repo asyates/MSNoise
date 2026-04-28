@@ -422,15 +422,17 @@ def create_project_from_yaml(session, yaml_path):
             create_workflow_link(session, from_step.step_id, to_step.step_id)
 
     # Pass 3: data sources
+    created_ds_ids = []
     for ds_dict in doc.get("data_sources", []):
         from ..core.stations import add_data_source
-        add_data_source(
+        ds = add_data_source(
             session,
             name=ds_dict["name"],
             uri=ds_dict.get("uri", ""),
             data_structure=ds_dict.get("data_structure", "SDS"),
             auth_env=ds_dict.get("auth_env", "MSNOISE"),
         )
+        created_ds_ids.append(ds.ref)
 
     # Pass 4: stations — endpoint fetch (level=response recommended so that
     # import_stationxml saves responses to response_path automatically) or
@@ -463,6 +465,16 @@ def create_project_from_yaml(session, yaml_path):
                     used=s.get("used", True),
                 )
 
+    # Pass 4b: if YAML declared datasources, assign the first one to all
+    # stations whose data_source_id is still NULL (installer default).
+    if created_ds_ids:
+        from ..msnoise_table_def import Station
+        target_ds_id = created_ds_ids[0]
+        stations = session.query(Station).filter(Station.data_source_id == None).all()
+        for sta in stations:
+            sta.data_source_id = target_ds_id
+        session.commit()
+        if len(created_ds_ids) > 1:
     return created_steps, warnings
 
 
