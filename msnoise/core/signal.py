@@ -960,14 +960,67 @@ def _morlet_wavelet(M, s, w=5.0):
 def tfpws_stack(data, fs, freqmin, freqmax, power=2, nscales=20):
     """Time-frequency phase-weighted stack (Schimmel & Gallart 2007).
 
-    :param data: 2-D array of shape ``(N_traces, N_lags)``.  NaN rows must
-        have been removed by the caller (see :func:`stack`).
+    Computes the CWT of every input trace with a complex Morlet wavelet at
+    *nscales* log-spaced scales, derives the instantaneous-phase coherence
+    :math:`c(a, t)` across traces at each (scale *a*, lag *t*) point,
+    averages over scales to produce a per-lag weight :math:`w(t)`, then
+    returns the linear mean multiplied by :math:`w(t)^{\\textit{power}}`.
+
+    The Morlet wavelet used here is the standard complex Morlet in the
+    convolution (not the FFT-based :class:`_Morlet` used by the WCT
+    pipeline):
+
+    .. math::
+
+        \\psi_{M,s}(t) =
+            \\frac{1}{\\pi^{1/4} \\sqrt{s}}\\,
+            e^{i\\omega_0 t/s}\\,
+            e^{-t^2/(2s^2)}, \\qquad \\omega_0 = 5
+
+    The scale–frequency relationship is :math:`f = \\omega_0 f_s / (2\\pi s)`,
+    so scales are chosen as
+    :math:`s_k = \\omega_0 / (2\\pi f_k / f_s)` for *nscales* frequencies
+    :math:`f_k` log-spaced in [*freqmin*, *freqmax*].
+
+    The weight is:
+
+    .. math::
+
+        w(t) = \\left[
+            \\frac{1}{A} \\sum_{k=1}^{A}
+            \\frac{1}{N} \\left|
+                \\sum_{j=1}^{N} e^{i\\,\\arg\\mathcal{W}_j(s_k, t)}
+            \\right|
+        \\right]^{\\textit{power}}
+
+    where :math:`\\mathcal{W}_j(s_k, t)` is the CWT coefficient of trace
+    *j* at scale *k* and lag *t*, and *A* = *nscales*.
+
+    .. note::
+
+        This function is called by :func:`stack` when
+        ``stack_method="tfpws"``.  Prefer that entry-point in production
+        code; call this function directly only when you need to tune
+        *nscales* or *power* without going through the full stack
+        dispatcher.
+
+    :param data: 2-D array of shape ``(N_traces, N_lags)``.  NaN rows
+        must be removed before calling (handled by :func:`stack`).
     :param fs: Sampling rate of the CCF traces (Hz).
-    :param freqmin: Lower frequency bound of the parent filter (Hz).
-    :param freqmax: Upper frequency bound of the parent filter (Hz).
+    :param freqmin: Lower frequency bound for the CWT scale range (Hz).
+        Should match the parent filter's *freqmin*.
+    :param freqmax: Upper frequency bound for the CWT scale range (Hz).
+        Should match the parent filter's *freqmax*.
     :param power: Exponent applied to the coherence weight (default 2).
+        Equivalent to the ``pws_power`` parameter in :func:`stack`.
     :param nscales: Number of log-spaced CWT scales (default 20).
     :returns: 1-D array of length ``N_lags``.
+
+    References
+    ----------
+    Schimmel, M. & Gallart, J. (2007). Frequency-dependent phase coherence
+    for noise suppression in seismic array data. *Journal of Geophysical
+    Research*, 112, B04303. https://doi.org/10.1029/2006JB004680
     """
     from scipy.signal import fftconvolve
 
@@ -991,27 +1044,113 @@ def tfpws_stack(data, fs, freqmin, freqmax, power=2, nscales=20):
 def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
           goal_sampling_rate=20.0, freqmin=1.0, freqmax=10.0,
           tfpws_nscales=20):
-    """
+    """Stack an array of CCF traces into a single representative trace.
+
+    Three methods are available, selected via *stack_method*:
+
+    **Linear stack** (``"linear"``)
+        The arithmetic mean across all input traces:
+
+        .. math::
+
+            s(t) = \\frac{1}{N} \\sum_{j=1}^{N} d_j(t)
+
+        Incoherent noise cancels as :math:`1/\\sqrt{N}`.  Fastest and most
+        transparent, but offers no protection against high-amplitude
+        transients (earthquakes, instrumental glitches) that survive
+        pre-processing.
+
+    **Phase-weighted stack** (``"pws"``)
+        Introduced by Schimmel & Paulssen (1997) :ref:`Schimmel1997 <Schimmel1997>`.
+        Each sample is weighted by the instantaneous phase coherence
+        :math:`c(t)` of the analytic signal across all traces:
+
+        .. math::
+
+            c(t) = \\frac{1}{N} \\left|
+                \\sum_{j=1}^{N} e^{i\\,\\phi_j(t)}
+            \\right|, \\qquad c(t) \\in [0, 1]
+
+        where :math:`\\phi_j(t) = \\arg\\bigl(d_j(t) + i\\,\\mathcal{H}\\{d_j\\}(t)\\bigr)`
+        is the instantaneous phase of trace *j* obtained via the Hilbert
+        transform :math:`\\mathcal{H}`.  The coherence is smoothed with a
+        boxcar window of *pws_timegate* seconds before being raised to the
+        power *v* = *pws_power*:
+
+        .. math::
+
+            s(t) = \\frac{1}{N} \\sum_{j=1}^{N} d_j(t) \\cdot c(t)^v
+
+        High-amplitude incoherent transients have random phases across
+        traces, so :math:`c(t) \\approx 0` at those times; coherent
+        arrivals have :math:`c(t) \\approx 1` and are preserved.
+
+    **Time-frequency phase-weighted stack** (``"tfpws"``)
+        The TF extension of PWS by Schimmel & Gallart (2007)
+        :ref:`Schimmel2007 <Schimmel2007>`.  Phase coherence is computed in the
+        time-frequency domain via a continuous wavelet transform (CWT)
+        with a complex Morlet wavelet, giving a coherence map
+        :math:`c(a, t)` that is both scale- and time-dependent.
+        Averaging over the *nscales* log-spaced scales spanning
+        [*freqmin*, *freqmax*] Hz yields a single per-lag weight:
+
+        .. math::
+
+            W_j(a, t) = \\mathcal{W}\\{d_j\\}(a, t)
+
+        .. math::
+
+            c(a, t) = \\frac{1}{N} \\left|
+                \\sum_{j=1}^{N} e^{i\\,\\arg W_j(a,t)}
+            \\right|
+
+        .. math::
+
+            w(t) = \\left[
+                \\frac{1}{A} \\sum_{a} c(a, t)
+            \\right]^v, \\qquad
+            s(t) = \\frac{1}{N} \\sum_{j=1}^{N} d_j(t) \\cdot w(t)
+
+        where :math:`A` is the number of scales.  Because coherence is
+        evaluated independently at each scale, tf-PWS is more sensitive
+        to narrow-band coherent arrivals than time-domain PWS.  It is
+        particularly effective for noise autocorrelations where body-wave
+        reflections occupy a limited frequency band
+        (Romero & Schimmel 2018 :ref:`Romero2018 <Romero2018>`).
+
+        .. note::
+
+            Memory scales as :math:`O(N \\times A \\times T)` complex128.
+            For long CCFs or large archives consider reducing *nscales*
+            (default 20) or chunking pairs outside this function.
+
+    
+
     :type data: :class:`numpy.ndarray`
-    :param data: the data to stack, each row being one CCF
+    :param data: 2-D array of shape ``(N_traces, N_lags)``, each row one CCF.
     :type stack_method: str
-    :param stack_method: ``linear`` (mean), ``pws`` (phase-weighted stack,
-        Schimmel & Paulssen 1997), or ``tfpws`` (time-frequency PWS,
-        Schimmel & Gallart 2007).
+    :param stack_method: ``"linear"``, ``"pws"``, or ``"tfpws"``.
     :type pws_timegate: float
-    :param pws_timegate: PWS time gate in seconds (``pws`` only).
+    :param pws_timegate: Boxcar smoothing window for the PWS coherence
+        estimate, in seconds (``"pws"`` only).  Default 10 s.
     :type pws_power: float
-    :param pws_power: Power of the PWS / tf-PWS weights.
+    :param pws_power: Exponent *v* applied to the coherence weight.
+        Larger values increase selectivity.  Shared by ``"pws"`` and
+        ``"tfpws"``.  Default 2.
     :type goal_sampling_rate: float
-    :param goal_sampling_rate: Sampling rate of the CCF array submitted.
+    :param goal_sampling_rate: Sampling rate of the CCF array (Hz).
     :type freqmin: float
-    :param freqmin: Lower frequency bound (Hz) — used by ``tfpws`` only.
+    :param freqmin: Lower frequency bound (Hz) for the CWT scale range
+        — ``"tfpws"`` only.  Should match the parent filter's *freqmin*.
     :type freqmax: float
-    :param freqmax: Upper frequency bound (Hz) — used by ``tfpws`` only.
+    :param freqmax: Upper frequency bound (Hz) for the CWT scale range
+        — ``"tfpws"`` only.  Should match the parent filter's *freqmax*.
     :type tfpws_nscales: int
-    :param tfpws_nscales: Number of CWT scales — used by ``tfpws`` only.
-    :rtype: :class:`numpy.array`
-    :return: the stacked CCF.
+    :param tfpws_nscales: Number of log-spaced CWT scales between
+        *freqmin* and *freqmax* — ``"tfpws"`` only.  Default 20.
+    :rtype: :class:`numpy.ndarray`
+    :return: 1-D stacked CCF of length ``N_lags``, or ``[]`` if no valid
+        (non-NaN) traces are present.
     """
     if len(data) == 0:
         logging.debug("No data to stack.")
