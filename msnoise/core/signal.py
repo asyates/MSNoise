@@ -298,27 +298,176 @@ def smoothCFS(cfs, scales, dt, ns, nt):
 
 
 
+
+# ── Wavelet classes and CWT ──────────────────────────────────────────────────
+# Self-contained implementation of the mother wavelets and CWT used by the
+# WCT pipeline (s08_compute_wct).  Algorithm: Torrence & Compo (1998, BAMS),
+# Tables 1–2.
+
+class _Morlet:
+    """Morlet wavelet (Torrence & Compo 1998, Table 1, row 1).
+
+    :param f0: Central angular frequency. Default 6.
+    """
+    name = "Morlet"
+
+    def __init__(self, f0=6):
+        self.f0 = float(f0)
+        self.dofmin = 2
+        if f0 == 6:
+            self.cdelta, self.gamma, self.deltaj0 = 0.776, 2.32, 0.60
+        else:
+            self.cdelta = self.gamma = self.deltaj0 = -1
+
+    def psi_ft(self, f):
+        """Fourier transform of the Morlet wavelet."""
+        return np.pi ** -0.25 * np.exp(-0.5 * (f - self.f0) ** 2)
+
+    def flambda(self):
+        """Fourier wavelength (T&C eq. 1)."""
+        return (4 * np.pi) / (self.f0 + np.sqrt(2 + self.f0 ** 2))
+
+    def coi(self):
+        """e-Folding time (T&C Table 1)."""
+        return 1.0 / np.sqrt(2)
+
+    def smooth(self, W, dt, dj, scales):
+        """Smooth CWT coefficients (time + scale axes) for coherence."""
+        from scipy.signal import convolve2d
+        m, n = W.shape
+        N = int(2 ** np.ceil(np.log2(n)))
+        k = 2 * np.pi * np.fft.fftfreq(N)
+        snorm = scales / dt
+        F = np.exp(-0.5 * (snorm[:, np.newaxis] ** 2) * k ** 2)
+        T = np.fft.ifft(F * np.fft.fft(W, n=N, axis=1), axis=1)[:, :n]
+        if np.isreal(W).all():
+            T = T.real
+        wsize = self.deltaj0 / dj * 2
+        win = np.ones(max(1, int(np.round(wsize))))
+        win /= win.sum()
+        T = convolve2d(T, win[:, np.newaxis], "same")
+        return T
+
+
+class _Paul:
+    """Paul wavelet of order *m* (Torrence & Compo 1998, Table 1, row 2)."""
+    name = "Paul"
+
+    def __init__(self, m=4):
+        self.m = int(m)
+        self.dofmin = 2
+        if m == 4:
+            self.cdelta, self.gamma, self.deltaj0 = 1.132, 1.17, 1.50
+        else:
+            self.cdelta = self.gamma = self.deltaj0 = -1
+
+    def psi_ft(self, f):
+        m = self.m
+        norm = 2 ** m / np.sqrt(m * np.prod(np.arange(2, 2 * m, dtype=float)))
+        return norm * f ** m * np.exp(-f) * (f > 0)
+
+    def flambda(self):
+        return 4 * np.pi / (2 * self.m + 1)
+
+    def coi(self):
+        return np.sqrt(2)
+
+
+class _DOG:
+    """Derivative-of-Gaussian wavelet of order *m* (T&C 1998, Table 1, row 3)."""
+    name = "DOG"
+
+    def __init__(self, m=2):
+        from scipy.special import gamma as _gamma
+        self.m = int(m)
+        self.dofmin = 1
+        self._norm = 1.0 / np.sqrt(_gamma(m + 0.5))
+        if m == 2:
+            self.cdelta, self.gamma, self.deltaj0 = 3.541, 1.43, 1.40
+        elif m == 6:
+            self.cdelta, self.gamma, self.deltaj0 = 1.966, 1.37, 0.97
+        else:
+            self.cdelta = self.gamma = self.deltaj0 = -1
+
+    def psi_ft(self, f):
+        return -(1j ** self.m) * self._norm * f ** self.m * np.exp(-0.5 * f ** 2)
+
+    def flambda(self):
+        return 2 * np.pi / np.sqrt(self.m + 0.5)
+
+    def coi(self):
+        return 1.0 / np.sqrt(2)
+
+
+class _MexicanHat(_DOG):
+    """Mexican hat wavelet (DOG with m=2)."""
+    name = "MexicanHat"
+
+    def __init__(self):
+        super().__init__(m=2)
+
+
+def _cwt(signal, dt, dj=1 / 12, s0=-1, J=-1, wavelet=None, freqs=None):
+    """Continuous wavelet transform (Torrence & Compo 1998).
+
+    Uses FFT-domain convolution for efficiency.
+
+    :param signal: 1-D input array.
+    :param dt: Sampling interval (seconds).
+    :param dj: Scale spacing. Default 1/12.
+    :param s0: Smallest scale. Default ``2*dt / wavelet.flambda()``.
+    :param J: Number of scales minus one. Default derived from signal length.
+    :param wavelet: Mother wavelet instance. Defaults to ``_Morlet(6)``.
+    :param freqs: Optional custom frequency array (Hz); overrides dj/s0/J.
+    :returns: ``(W, sj, freqs, coi, signal_ft, ftfreqs)``
+    """
+    if wavelet is None:
+        wavelet = _Morlet()
+    n0 = len(signal)
+    if freqs is not None:
+        sj = 1.0 / (wavelet.flambda() * np.asarray(freqs))
+    else:
+        if s0 == -1:
+            s0 = 2 * dt / wavelet.flambda()
+        if J == -1:
+            J = int(np.round(np.log2(n0 * dt / s0) / dj))
+        sj = s0 * 2 ** (np.arange(0, J + 1) * dj)
+        freqs = 1.0 / (wavelet.flambda() * sj)
+    N = int(2 ** np.ceil(np.log2(n0)))
+    signal_ft = np.fft.fft(signal, n=N)
+    ftfreqs = 2 * np.pi * np.fft.fftfreq(N, dt)
+    sj_col = sj[:, np.newaxis]
+    psi_ft_bar = ((sj_col * ftfreqs[1] * N) ** 0.5
+                  * np.conj(wavelet.psi_ft(sj_col * ftfreqs)))
+    W = np.fft.ifft(signal_ft * psi_ft_bar, axis=1)
+    sel = ~np.isnan(W).all(axis=1)
+    sj, freqs, W = sj[sel], freqs[sel], W[sel, :n0]
+    coi = (wavelet.flambda() * wavelet.coi() * dt
+           * (n0 / 2 - np.abs(np.arange(n0) - (n0 - 1) / 2)))
+    ft_out = signal_ft[1: N // 2] / N ** 0.5
+    ftfreqs_out = ftfreqs[1: N // 2] / (2 * np.pi)
+    return W, sj, freqs, coi, ft_out, ftfreqs_out
+
 def get_wavelet_type(wavelet_type):
-    """Return a :mod:`pycwt` wavelet object for the given type/parameter pair.
+    """Return an internal wavelet object for the given type/parameter pair.
 
     :param wavelet_type: Tuple ``(name, param)`` or ``(name,)``.
         Supported names: ``"Morlet"``, ``"Paul"``, ``"DOG"``, ``"MexicanHat"``.
-    :returns: Corresponding :mod:`pycwt` wavelet instance.
+    :returns: Corresponding wavelet instance (_Morlet, _Paul, _DOG, _MexicanHat).
     """
-    import pycwt as wavelet
     defaults = {"Morlet": 6, "Paul": 4, "DOG": 2, "MexicanHat": 2}
     name = wavelet_type[0]
+    if name not in defaults:
+        raise ValueError(f"Unknown wavelet type: {name!r}")
     param = float(wavelet_type[1]) if len(wavelet_type) == 2 else defaults[name]
     if name == "Morlet":
-        return wavelet.Morlet(param)
+        return _Morlet(param)
     elif name == "Paul":
-        return wavelet.Paul(param)
+        return _Paul(int(param))
     elif name == "DOG":
-        return wavelet.DOG(param)
+        return _DOG(int(param))
     elif name == "MexicanHat":
-        return wavelet.MexicanHat()
-    else:
-        raise ValueError(f"Unknown wavelet type: {name!r}")
+        return _MexicanHat()
 
 
 
@@ -339,21 +488,20 @@ def prepare_ref_wct(trace_ref, fs, ns=3, nt=0.25, vpo=12,
     :param freqmin: Lowest frequency of interest (Hz).
     :param freqmax: Highest frequency of interest (Hz).
     :param nptsfreq: Number of frequency points.
-    :param mother: pycwt wavelet object (from :func:`get_wavelet_type`).
-        If ``None``, defaults to ``Morlet(6)``.
+    :param mother: Wavelet instance from :func:`get_wavelet_type`.
+        If ``None``, defaults to ``_Morlet(6)``.
     :returns: ``(cwt_ref, cfs1, scales, freqs, coi, invscales, dt, freqlim)``
         — an opaque tuple to pass directly to :func:`apply_wct`.
     """
-    import pycwt as wavelet_lib
     if mother is None:
-        mother = wavelet_lib.Morlet(6)
+        mother = _Morlet(6)
     nx = np.size(trace_ref)
     x_ref = np.transpose(trace_ref)
     dt = 1.0 / fs
     dj = 1.0 / vpo
     s0 = 2 * dt
     freqlim = np.linspace(freqmax, freqmin, num=nptsfreq, endpoint=True)
-    cwt_ref, scales, freqs, coi, _, _ = wavelet_lib.cwt(
+    cwt_ref, scales, freqs, coi, _, _ = _cwt(
         x_ref, dt, dj, s0, -1, mother, freqs=freqlim)
     scales_col = np.array([[kk] for kk in scales])
     invscales = np.kron(np.ones((1, nx)), 1.0 / scales_col)
@@ -372,16 +520,13 @@ def apply_wct(ref_wct_data, trace_current, ns=3, nt=0.25):
     :param nt: Time-axis smoothing parameter (idem).
     :returns: ``(WXamp, WXspec, WXangle, Wcoh, WXdt, freqs, coi)``
     """
-    import pycwt as wavelet_lib
     cwt_ref, cfs1, scales_col, freqs, coi, invscales, dt, freqlim = ref_wct_data
     x_cur = np.transpose(trace_current)
-    # Re-derive wavelet params consistent with the reference CWT
     dj = 1.0 / (scales_col.shape[0] - 1) if scales_col.shape[0] > 1 else 1.0
     s0 = 2 * dt
     nx = np.size(trace_current)
-    # Use the same freqlim from the reference call so scales are identical
-    cwt_cur, _, _, _, _, _ = wavelet_lib.cwt(
-        x_cur, dt, dj, s0, -1, wavelet_lib.Morlet(6), freqs=freqlim)
+    cwt_cur, _, _, _, _, _ = _cwt(
+        x_cur, dt, dj, s0, -1, _Morlet(6), freqs=freqlim)
     # Recompute invscales for current length (same as ref if length unchanged)
     inv_cur = np.kron(np.ones((1, nx)), 1.0 / scales_col)
     power_cur = (inv_cur * abs(cwt_cur) ** 2).astype(complex)
@@ -798,22 +943,73 @@ def make_same_length(st):
 # ============================================================
 
 
+
+def _morlet_wavelet(M, s, w=5.0):
+    """Complex Morlet wavelet (L2-normalised) for use in :func:`tfpws_stack`.
+
+    :param M: Number of samples.
+    :param s: Scale parameter (controls dilation).
+    :param w: Central angular frequency (default 5.0).
+    :returns: Complex 1-D array of length *M*.
+    """
+    x = np.linspace(-10, 10, M)
+    wav = np.exp(1j * w * x / s) * np.exp(-0.5 * (x / s) ** 2)
+    return wav / (np.pi ** 0.25 * np.sqrt(s))
+
+
+def tfpws_stack(data, fs, freqmin, freqmax, power=2, nscales=20):
+    """Time-frequency phase-weighted stack (Schimmel & Gallart 2007).
+
+    :param data: 2-D array of shape ``(N_traces, N_lags)``.  NaN rows must
+        have been removed by the caller (see :func:`stack`).
+    :param fs: Sampling rate of the CCF traces (Hz).
+    :param freqmin: Lower frequency bound of the parent filter (Hz).
+    :param freqmax: Upper frequency bound of the parent filter (Hz).
+    :param power: Exponent applied to the coherence weight (default 2).
+    :param nscales: Number of log-spaced CWT scales (default 20).
+    :returns: 1-D array of length ``N_lags``.
+    """
+    from scipy.signal import fftconvolve
+
+    N, T = data.shape
+    W = 5.0
+    freqs  = np.logspace(np.log10(freqmin), np.log10(freqmax), nscales)
+    scales = W / (2.0 * np.pi * freqs / fs)
+
+    phase_sum = np.zeros((nscales, T), dtype=complex)
+    for trace in data:
+        for k, s in enumerate(scales):
+            M = max(int(10 * s), 3) | 1
+            wav = _morlet_wavelet(M, s, w=W)
+            coeffs = fftconvolve(trace, wav[::-1].conj(), mode="same")
+            phase_sum[k] += np.exp(1j * np.angle(coeffs))
+
+    coh    = np.abs(phase_sum) / N
+    weight = coh.mean(axis=0) ** power
+    return data.mean(axis=0) * weight
+
 def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
-          goal_sampling_rate=20.0):
+          goal_sampling_rate=20.0, freqmin=1.0, freqmax=10.0,
+          tfpws_nscales=20):
     """
     :type data: :class:`numpy.ndarray`
     :param data: the data to stack, each row being one CCF
     :type stack_method: str
-    :param stack_method: either ``linear``: average of all CCF or ``pws`` to
-        compute the phase weigthed stack. If ``pws`` is selected,
-        the function expects the ``pws_timegate`` and ``pws_power``.
+    :param stack_method: ``linear`` (mean), ``pws`` (phase-weighted stack,
+        Schimmel & Paulssen 1997), or ``tfpws`` (time-frequency PWS,
+        Schimmel & Gallart 2007).
     :type pws_timegate: float
-    :param pws_timegate: PWS time gate in seconds. Width of the smoothing
-         window to convolve with the PWS spectrum.
+    :param pws_timegate: PWS time gate in seconds (``pws`` only).
     :type pws_power: float
-    :param pws_power: Power of the PWS weights to be applied to the CCF stack.
+    :param pws_power: Power of the PWS / tf-PWS weights.
     :type goal_sampling_rate: float
-    :param goal_sampling_rate: Sampling rate of the CCF array submitted
+    :param goal_sampling_rate: Sampling rate of the CCF array submitted.
+    :type freqmin: float
+    :param freqmin: Lower frequency bound (Hz) — used by ``tfpws`` only.
+    :type freqmax: float
+    :param freqmax: Upper frequency bound (Hz) — used by ``tfpws`` only.
+    :type tfpws_nscales: int
+    :param tfpws_nscales: Number of CWT scales — used by ``tfpws`` only.
     :rtype: :class:`numpy.array`
     :return: the stacked CCF.
     """
@@ -859,6 +1055,17 @@ def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
         for c in data:
             corr += c * coh
         corr /= data.shape[0]
+
+    elif stack_method == "tfpws":
+        corr = tfpws_stack(
+            data, fs=goal_sampling_rate,
+            freqmin=freqmin, freqmax=freqmax,
+            power=pws_power, nscales=tfpws_nscales,
+        )
+
+    else:
+        logging.warning(f"Unknown stack_method {stack_method!r}; falling back to linear.")
+        corr = data.mean(axis=0)
 
     return corr
 

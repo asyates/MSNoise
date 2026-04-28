@@ -31,6 +31,5 @@ dependencies:
   - pyyaml
   - netCDF4
   - pip:
-      - git+https://github.com/regeirk/pycwt
       - click-command-tree
 

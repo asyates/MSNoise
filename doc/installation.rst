@@ -56,7 +56,6 @@ MSNoise's own GitHub CI:
       - pooch
       - pip
       - pip:
-          - git+https://github.com/regeirk/pycwt
 
 Then create and activate it:
 
