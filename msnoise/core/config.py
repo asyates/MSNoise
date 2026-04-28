@@ -380,7 +380,16 @@ def create_project_from_yaml(session, yaml_path):
     warnings = []
 
     for yaml_key, category, _set_number_hint, _after, overrides in entries:
-        set_number = create_config_set(session, category)
+        # If the hinted set already exists (e.g. global_1 created by installer),
+        # reuse it in place — don't create a duplicate.
+        existing = session.query(Config).filter(
+            Config.category == category,
+            Config.set_number == _set_number_hint,
+        ).first()
+        if existing:
+            set_number = _set_number_hint
+        else:
+            set_number = create_config_set(session, category)
         if set_number is None:
             w = f"No config CSV for category {category!r} (key {yaml_key!r}) — skipped."
             warnings.append(w)

@@ -275,6 +275,8 @@ def _find_dot() -> str:
     return "dot"   # fallback: let Sphinx emit its own error
 
 graphviz_dot = _find_dot()
+import sys
+sys.path.append(os.path.dirname(graphviz_dot))
 graphviz_output_format = 'svg'   # resolution-independent; renders sharply at any zoom
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['.templates']
