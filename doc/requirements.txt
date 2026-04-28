@@ -10,6 +10,7 @@ click-plugins
 click-command-tree
 matplotlib
 obspy
+nbsphinx
 numpy
 scipy
 sqlalchemy

@@ -47,7 +47,7 @@ with the exact commands at each stage.
 
     results
     how_tos
-    auto_examples/index
+    notebooks/index
 
 How to read and work with computed results in notebooks and scripts, plus
 recipes for common tasks and a gallery of worked examples.
