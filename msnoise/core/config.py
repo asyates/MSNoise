@@ -214,7 +214,7 @@ def update_config(session, name, value, plugin=None, category='global', set_numb
 
 
 
-def create_config_set(session, set_name):
+def create_config_set(session, set_name, set_number_hint=None):
     """
     Create a configuration set for a workflow step.
 
@@ -235,6 +235,16 @@ def create_config_set(session, set_name):
     config_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', f'config_{set_name}.csv')
     if not os.path.exists(config_file):
         return None
+
+    # If caller hints a set_number and rows already exist for it, reuse — don't duplicate.
+    if set_number_hint is not None:
+        from sqlalchemy import func as _f
+        existing_count = session.query(_f.count(Config.ref)).filter(
+            Config.category == set_name,
+            Config.set_number == set_number_hint,
+        ).scalar()
+        if existing_count:
+            return set_number_hint
 
     # Find the next available set_number for this category
     max_set_number = session.query(func.max(Config.set_number)).filter(
@@ -380,16 +390,7 @@ def create_project_from_yaml(session, yaml_path):
     warnings = []
 
     for yaml_key, category, _set_number_hint, _after, overrides in entries:
-        # If the hinted set already exists (e.g. global_1 created by installer),
-        # reuse it in place — don't create a duplicate.
-        existing = session.query(Config).filter(
-            Config.category == category,
-            Config.set_number == _set_number_hint,
-        ).first()
-        if existing:
-            set_number = _set_number_hint
-        else:
-            set_number = create_config_set(session, category)
+        set_number = create_config_set(session, category, set_number_hint=_set_number_hint)
         if set_number is None:
             w = f"No config CSV for category {category!r} (key {yaml_key!r}) — skipped."
             warnings.append(w)
