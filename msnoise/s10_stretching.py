@@ -1,4 +1,9 @@
-"""
+"""Compute seismic velocity changes via the stretching method.
+
+The stretching technique (:footcite:t:`SensSchoenfelder2006`) measures
+:math:`dv/v` by finding the dilation factor that maximises the correlation
+between a stretched copy of the reference CCF and the current daily CCF.
+
 .. warning:: if using only ``mov_stack`` = 1, no STR jobs is inserted in the
     database and consequently, no STR calculation will be done! FIX!
 
@@ -59,6 +64,8 @@ conflicts). This works both with SQLite and MySQL but be aware problems
 could occur with SQLite.
 
     Parallel Processing
+
+.. footbibliography::
 """
 
 from .core.db import connect, get_logger
@@ -123,6 +130,8 @@ def _hwhm_errors(corr_coeffs):
 
 def stretch_mat_creation(refcc, str_range=0.01, nstr=1001):
     """Matrix of stretched instances of a reference trace.
+
+    Implements the core of the stretching method (:footcite:t:`SensSchoenfelder2006`).
 
     The reference trace is stretched using cubic spline interpolation from
     ``-str_range`` to ``str_range`` (in %) across ``nstr`` steps.

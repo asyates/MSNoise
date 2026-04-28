@@ -2,8 +2,9 @@
 
 Reads the per-pair MWCS NetCDF files written by :mod:`msnoise.s05_compute_mwcs`
 and, for each time step, fits a weighted linear regression of the measured delay
-the measured delay ``delta_t`` against lag time ``t``,
-where ``delta_t(t) = -(dv/v) * t + a``:
+``delta_t`` against lag time ``t``, following :footcite:t:`Clarke2011` (which
+extends :footcite:t:`Poupinet1984`), where
+``delta_t(t) = -(dv/v) * t + a``:
 
 Two fits are produced at each time step:
 
@@ -52,6 +53,8 @@ Configuration Parameters
 * |cc.components_to_compute|
 * |cc.components_to_compute_single_station|
 * |global.hpc|
+
+.. footbibliography::
 """
 
 import time

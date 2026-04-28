@@ -119,7 +119,7 @@ def _analytic_phase(x: np.ndarray, eps_rel: float = 1e-6) -> np.ndarray:
     """Return the amplitude-normalised analytic signal (phase signal) of *x*.
 
     This is a direct Python translation of ``AnalyticSignal`` + ``AmpNorm``
-    from FastPCC (Ventosa et al., SRL 2019 / IEEE-TGRS 2023):
+    from FastPCC (:footcite:t:`Ventosa2019` / :footcite:t:`Ventosa2023`):
 
     1. FFT of real *x*
     2. Zero negative-frequency bins, double positive-frequency bins → analytic
@@ -157,7 +157,7 @@ def pcc_xcorr(data, maxlag, energy, index, plot=False, nfft=None,
 
     Replaces the former dependency on the unmaintained ``phasecorr`` package
     with a self-contained translation of the FFT-accelerated ``pcc2_set``
-    routine from FastPCC (Ventosa et al., SRL 2019; IEEE-TGRS 2023).
+    routine from FastPCC (:footcite:t:`Ventosa2019`; :footcite:t:`Ventosa2023`).
 
     **Algorithm** (matches FastPCC ``pcc2_set``):
 
@@ -185,13 +185,9 @@ def pcc_xcorr(data, maxlag, energy, index, plot=False, nfft=None,
     :rtype: dict
     :returns: ``{ccf_id: ccf_array}`` of length ``2*maxlag + 1`` per pair.
 
-    References
-    ----------
-    Ventosa S., Schimmel M. & E. Stutzmann, 2019.  SRL 90(4):1663-1669.
-    https://doi.org/10.1785/0220190022
+    .. rubric:: References
 
-    Ventosa S. & M. Schimmel, 2023.  IEEE-TGRS 61:1-17.
-    https://doi.org/10.1109/TGRS.2023.3294302
+    .. footcite:p:`Ventosa2019,Ventosa2023`
     """
     if not index:
         return {}
@@ -439,9 +435,9 @@ linearly proportional to frequency:
 
 The time shift for each window between two signals is the slope :math:`m` of a
 weighted linear regression of the samples within the frequency band of interest.
-The weights are those introduced by [Clarke2011]_,
+The weights are those introduced by :footcite:t:`Clarke2011`,
 which incorporate both the cross-spectral amplitude and cross-coherence, unlike
-[Poupinet1984]_. The errors are estimated using the weights (thus the
+:footcite:t:`Poupinet1984`. The errors are estimated using the weights (thus the
 coherence) and the squared misfit to the modelled slope:
 
 :math:`e_m = \\sqrt{\\sum_j{(\\frac{w_j \\nu_j}{\\sum_i{w_i \\nu_i^2}})^2}\\sigma_{\\phi}^2}`
@@ -484,6 +480,8 @@ segment.
 :returns: [time_axis,delta_t,delta_err,delta_mcoh]. time_axis contains the
     central times of the windows. The three other columns contain dt, error and
     mean coherence for each window.
+
+    .. footbibliography::
     """
     delta_t = []
     delta_err = []
