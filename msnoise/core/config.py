@@ -475,6 +475,11 @@ def create_project_from_yaml(session, yaml_path):
             sta.data_source_id = target_ds_id
         session.commit()
         if len(created_ds_ids) > 1:
+            w = (f"Multiple data_sources declared; assigned datasource id={target_ds_id} "
+                 f"to all stations. Update manually for per-station assignment.")
+            warnings.append(w)
+            logger.warning(w)
+
     return created_steps, warnings
 
 
