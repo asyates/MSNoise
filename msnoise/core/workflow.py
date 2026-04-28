@@ -857,17 +857,29 @@ def _get_or_create_lineage_id(session, lineage_str):
         row = session.query(Lineage).filter(
             Lineage.lineage_str == lineage_str).first()
     if row is not None:
-        return row.lineage_id
+        return row.lineage_idif to_insert:
+    for chunk_start in range(0, len(to_insert), _CHUNK):
+        chunk = to_insert[chunk_start:chunk_start + _CHUNK]
+        try:
+            session.bulk_insert_mappings(Job, chunk)
+            session.flush()
+        except Exception:
+            session.rollback()
+    created = len(to_insert)
 
     # 4. Truly new — insert and flush to get the generated ID
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    stmt = pg_insert(Lineage).values(lineage_str=lineage_str).on_conflict_do_nothing()
-    session.execute(stmt)
-    session.flush()
-    # Re-query to get the ID whether we inserted or another thread beat us
-    with session.no_autoflush:
-        row = session.query(Lineage).filter(Lineage.lineage_str == lineage_str).first()
-    return row.lineage_id if row else None
+    try:
+        row = Lineage(lineage_str=lineage_str)
+        session.add(row)
+        session.flush()
+        return row.lineage_id
+    except Exception:
+        # Another worker inserted it concurrently — roll back and re-query
+        session.rollback()
+        with session.no_autoflush:
+            row = session.query(Lineage).filter(
+                Lineage.lineage_str == lineage_str).first()
+        return row.lineage_id if row else None
 
 
 def _lineage_id_for(session, lineage_str):
@@ -962,19 +974,13 @@ def bulk_upsert_jobs(session, to_insert, to_bump_refs, now, *, bump_flag_filter=
     _CHUNK = 900
 
     if to_insert:
-        try:
-            from sqlalchemy.dialects.postgresql import insert as pg_insert
-            stmt = pg_insert(Job).values(to_insert).on_conflict_do_nothing()
-            session.execute(stmt)
-        except Exception:
-            # fallback for SQLite / MySQL
-            from sqlalchemy import insert as sa_insert
-            for chunk_start in range(0, len(to_insert), _CHUNK):
-                chunk = to_insert[chunk_start:chunk_start + _CHUNK]
-                try:
-                    session.bulk_insert_mappings(Job, chunk)
-                except Exception:
-                    pass
+        for chunk_start in range(0, len(to_insert), _CHUNK):
+            chunk = to_insert[chunk_start:chunk_start + _CHUNK]
+            try:
+                session.bulk_insert_mappings(Job, chunk)
+                session.flush()
+            except Exception:
+                session.rollback()
         created = len(to_insert)
 
     if to_bump_refs:
