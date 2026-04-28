@@ -159,6 +159,37 @@ For each trace the shared ``_data_bp`` (already bandpassed to
 .. footcite:p:`Schimmel1999,Schimmel2011,Ventosa2019,Ventosa2023`
 
 
+Same-Station Cross-Component (SC)
+----------------------------------
+
+When ``components_to_compute_single_station`` contains cross-component pairs
+(e.g. ``ZN``, ``ZE``, ``NE``) with station indices :math:`i = j` but different
+component indices, MSNoise computes the cross-correlation between two components
+of the same sensor.  SC was introduced for seismic monitoring by
+:footcite:t:`DePlaen2016`, who showed it outperforms inter-station CC when only
+a single broadband station is available:
+
+.. math::
+
+    C_{i\\alpha, i\\beta}(\\tau) = \\int_{-\\infty}^{\\infty}
+        d_{i\\alpha}(t)\\, d_{i\\beta}(t + \\tau)\\, dt,
+        \\qquad \\alpha \\neq \\beta
+
+where :math:`\\alpha, \\beta \\in \\{Z, N, E\\}` are distinct component labels at
+the same station :math:`i`.  The SC function reconstructs an approximation to
+the Green's function between two virtual sensors co-located at the same site
+but oriented differently, making it sensitive to surface-wave velocity changes
+in the shallow crust.
+
+The algorithm (CC or PCC2) is selected independently via
+``cc_type_single_station_SC``.
+
+.. rubric:: References
+
+.. footcite:p:`DePlaen2016`
+
+
+
 Auto-Correlation (AC)
 ---------------------
 
@@ -175,7 +206,10 @@ zero-lag cross-correlation of a trace with a time-delayed copy of itself:
 which is equivalent to the inverse Fourier transform of the power spectrum
 :math:`|X_i(\\nu)|^2`.  The ACF provides a *zero-offset reflection response*
 beneath the station — the same signal that would be recorded if the station
-were both source and receiver (:footcite:t:`Romero2018`).
+were both source and receiver (:footcite:t:`Romero2018`).  AC was used for
+volcano monitoring alongside SC by :footcite:t:`DePlaen2016`, and the
+combination of AC with PCC was demonstrated at Mt. Etna by
+:footcite:t:`DePlaen2019`.
 
 The algorithm (CC or PCC2) is selected independently for AC via
 ``cc_type_single_station_AC``.  PCC2 is strongly recommended for AC because
@@ -189,6 +223,10 @@ temporal normalisation.
     ``whitening = N`` when ``cc_type_single_station_AC = PCC``). Whitening
     before autocorrelation collapses the ACF to a sinc function, destroying
     all structural information.
+
+.. rubric:: References
+
+.. footcite:p:`DePlaen2016,DePlaen2019,Romero2018`
 
 
 Stacking daily windows
