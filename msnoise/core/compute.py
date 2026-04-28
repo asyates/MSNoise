@@ -229,29 +229,42 @@ def pcc_xcorr(data, maxlag, energy, index, plot=False, nfft=None,
     return corr
 
 def whiten(data, Nfft, delta, freqmin, freqmax, plot=False, returntime=False):
-    """This function takes 1-dimensional *data* timeseries array,
-    goes to frequency domain using fft, whitens the amplitude of the spectrum
-    in frequency domain between *freqmin* and *freqmax*
-    and returns the whitened fft.
+    """Spectral whitening (1-bit / brutal mode) for a single real trace.
+
+    Computes the FFT of *data*, normalises the amplitude to unity in the
+    passband ``[freqmin, freqmax]``, and returns the result.  A 100-sample
+    cosine taper transitions smoothly to zero outside the passband, ensuring
+    no sharp spectral edges.  This is the "brutal" whitening described by
+    :footcite:t:`Bensen2007` (their Section 2.2).
+
+    .. math::
+
+        \\tilde{X}[k] = \\exp\\!\\left(i\\,\\arg X[k]\\right)
+        \\qquad \\text{for } \\nu_k \\in [f_\\text{low},\\, f_\\text{high}]
+
+    Bins outside the passband are zeroed (with a cosine-tapered transition
+    region); Hermitian symmetry is enforced so that the inverse FFT yields a
+    real signal.
 
     :type data: :class:`numpy.ndarray`
-    :param data: Contains the 1D time series to whiten
+    :param data: 1-D real time series.
     :type Nfft: int
-    :param Nfft: The number of points to compute the FFT
+    :param Nfft: FFT length (zero-padding if larger than ``len(data)``).
     :type delta: float
-    :param delta: The sampling frequency of the `data`
+    :param delta: Sampling interval in seconds (``1 / sampling_rate``).
     :type freqmin: float
-    :param freqmin: The lower frequency bound
+    :param freqmin: Lower passband frequency (Hz).
     :type freqmax: float
-    :param freqmax: The upper frequency bound
+    :param freqmax: Upper passband frequency (Hz).
     :type plot: bool
-    :param plot: Whether to show a raw plot of the action (default: False)
-
+    :param plot: Show a diagnostic plot of the whitening stages (default False).
+    :type returntime: bool
+    :param returntime: If True, return the whitened time-domain signal instead
+        of the frequency-domain array.
     :rtype: :class:`numpy.ndarray`
-    :returns: The FFT of the input trace, whitened between the frequency bounds
+    :returns: Whitened one-sided FFT array (complex) of length ``Nfft``, or the
+        corresponding real time-domain signal if *returntime* is True.
     """
-
-    # TODO: docsting
     if plot:
         import matplotlib.pyplot as plt
         plt.subplot(411)
@@ -324,28 +337,60 @@ def whiten(data, Nfft, delta, freqmin, freqmax, plot=False, returntime=False):
     return FFTRawSign
 
 def whiten2(fft, Nfft, low, high, porte1, porte2, psds, whiten_type):
-    """This function takes 1-dimensional *data* timeseries array,
-    goes to frequency domain using fft, whitens the amplitude of the spectrum
-    in frequency domain between *freqmin* and *freqmax*
-    and returns the whitened fft.
+    """Vectorised in-place spectral whitening for a batch of pre-computed FFTs.
 
-    :type data: :class:`numpy.ndarray`
-    :param data: Contains the 1D time series to whiten
+    Operates on the one-sided positive-frequency half of each FFT row and
+    enforces Hermitian symmetry afterward. Three modes are available via
+    *whiten_type*, corresponding to the normalisation strategies described
+    by :footcite:t:`Bensen2007`:
+
+    - **brutal** (default) — one-bit normalisation: amplitude set to unity
+      inside the passband with a cosine taper at both edges:
+
+      .. math::
+
+          \\tilde{X}[k] = \\exp\\!\\left(i\\,\\arg X[k]\\right)
+
+    - **HANN** — one-bit normalisation weighted by a Hann window across the
+      passband, smoothly tapering the spectral amplitude:
+
+      .. math::
+
+          \\tilde{X}[k] = \\frac{X[k]}{|X[k]|}\\cdot w_\\text{Hann}[k]
+
+    - **PSD** — divide by a pre-computed smoothed PSD, then clip outlier bins
+      at the 5th–95th percentile to suppress spectral spikes:
+
+      .. math::
+
+          \\tilde{X}[k] = \\operatorname{clip}\\!\\left(
+              \\frac{X[k]}{S[k]},\\,-A,\\,A
+          \\right)
+
+      where :math:`S[k]` is the smoothed PSD and :math:`A` is the RMS of
+      the non-outlier bins.
+
+    :type fft: :class:`numpy.ndarray`
+    :param fft: 2-D complex array ``(n_traces, Nfft)`` of pre-computed FFTs.
+        **Modified in-place.**
     :type Nfft: int
-    :param Nfft: The number of points to compute the FFT
-    :type delta: float
-    :param delta: The sampling frequency of the `data`
-    :type freqmin: float
-    :param freqmin: The lower frequency bound
-    :type freqmax: float
-    :param freqmax: The upper frequency bound
-    :type plot: bool
-    :param plot: Whether to show a raw plot of the action (default: False)
-
-    :rtype: :class:`numpy.ndarray`
-    :returns: The FFT of the input trace, whitened between the frequency bounds
+    :param Nfft: FFT length (must match ``fft.shape[1]``).
+    :type low: int
+    :param low: Bin index where the left cosine taper begins (below passband).
+    :type high: int
+    :param high: Bin index where the right cosine taper ends (above passband).
+    :type porte1: int
+    :param porte1: First bin of the flat passband.
+    :type porte2: int
+    :param porte2: Last bin of the flat passband.
+    :type psds: :class:`numpy.ndarray` or None
+    :param psds: Smoothed PSD array ``(n_traces, Nfft//2+1)``; used only
+        when *whiten_type* is ``"PSD"``.
+    :type whiten_type: str
+    :param whiten_type: One of ``"brutal"`` (default), ``"HANN"``, or
+        ``"PSD"``.
+    :returns: None (modifies *fft* in-place).
     """
-    # TODO: docsting
     taper = np.ones(Nfft // 2 + 1)
     taper[0:low] *= 0
     taper[low:porte1] *= np.cos(np.linspace(np.pi / 2., 0, porte1 - low)) ** 2
@@ -393,8 +438,20 @@ def whiten2(fft, Nfft, low, high, porte1, porte2, psds, whiten_type):
         fft[i, -(Nfft // 2) + 1:] = np.conjugate(fft[i, 1:(Nfft // 2)])[::-1]
 
 def smooth(x, window='boxcar', half_win=3):
-    """ some window smoothing """
-    # TODO: docsting
+    """Smooth a 1-D array with a symmetric window.
+
+    Pads the signal by reflection at both ends (length ``2*half_win + 1``)
+    to reduce boundary effects, then convolves with a normalised window.
+
+    :type x: :class:`numpy.ndarray`
+    :param x: 1-D input array.
+    :type window: str
+    :param window: ``"boxcar"`` (uniform, default) or ``"hanning"``.
+    :type half_win: int
+    :param half_win: Half-width of the window; full width = ``2*half_win+1``.
+    :rtype: :class:`numpy.ndarray`
+    :returns: Smoothed array, same length as *x*.
+    """
     window_len = 2 * half_win + 1
     # extending the data at beginning and at the end
     # to apply the window at the borders
@@ -408,47 +465,59 @@ def smooth(x, window='boxcar', half_win=3):
 
 def mwcs(current, reference, freqmin, freqmax, df, tmin, window_length, step,
          smoothing_half_win=5):
-    """The `current` time series is compared to the `reference`.
-Both time series are sliced in several overlapping windows.
-Each slice is mean-adjusted and cosine-tapered (85% taper) before being Fourier-
-transformed to the frequency domain.
-:math:`F_{cur}(\\nu)` and :math:`F_{ref}(\\nu)` are the first halves of the
-Hermitian symmetric Fourier-transformed segments. The cross-spectrum
-:math:`X(\\nu)` is defined as
-:math:`X(\\nu) = F_{ref}(\\nu) F_{cur}^*(\\nu)`
+    """Moving Window Cross-Spectrum (MWCS) time-delay measurement.
 
-in which :math:`{}^*` denotes the complex conjugation.
-:math:`X(\\nu)` is then smoothed by convolution with a Hanning window.
-The similarity of the two time-series is assessed using the cross-coherency
-between energy densities in the frequency domain:
+    Both time series are sliced into overlapping windows. Each window is
+    mean-adjusted and cosine-tapered (85%) before being Fourier-transformed.
 
-:math:`C(\\nu) = \\frac{|\\overline{X(\\nu))}|}{\\sqrt{|\\overline{F_{ref}(\\nu)|^2} |\\overline{F_{cur}(\\nu)|^2}}}`
+    The cross-spectrum between the reference and current windows is:
 
-in which the over-line here represents the smoothing of the energy spectra for
-:math:`F_{ref}` and :math:`F_{cur}` and of the spectrum of :math:`X`. The mean
-coherence for the segment is defined as the mean of :math:`C(\\nu)` in the
-frequency range of interest. The time-delay between the two cross correlations
-is found in the unwrapped phase, :math:`\\phi(\\nu)`, of the cross spectrum and is
-linearly proportional to frequency:
+    .. math::
 
-:math:`\\phi_j = m. \\nu_j, m = 2 \\pi \\delta t`
+        X(\\nu) = F_\\text{ref}(\\nu)\\, F_\\text{cur}^*(\\nu)
 
-The time shift for each window between two signals is the slope :math:`m` of a
-weighted linear regression of the samples within the frequency band of interest.
-The weights are those introduced by :footcite:t:`Clarke2011`,
-which incorporate both the cross-spectral amplitude and cross-coherence, unlike
-:footcite:t:`Poupinet1984`. The errors are estimated using the weights (thus the
-coherence) and the squared misfit to the modelled slope:
+    where :math:`{}^*` denotes complex conjugation. :math:`X(\\nu)` is smoothed
+    by convolution with a Hanning window. Cross-coherency is then:
 
-:math:`e_m = \\sqrt{\\sum_j{(\\frac{w_j \\nu_j}{\\sum_i{w_i \\nu_i^2}})^2}\\sigma_{\\phi}^2}`
+    .. math::
 
-where :math:`w` are weights, :math:`\\nu` are cross-coherences and
-:math:`\\sigma_{\\phi}^2` is the squared misfit of the data to the modelled slope
-and is calculated as :math:`\\sigma_{\\phi}^2 = \\frac{\\sum_j(\\phi_j - m \\nu_j)^2}{N-1}`
+        C(\\nu) = \\frac{
+            \\left| \\overline{X(\\nu)} \\right|
+        }{
+            \\sqrt{
+                \\overline{\\left|F_\\text{ref}(\\nu)\\right|^2}\\;
+                \\overline{\\left|F_\\text{cur}(\\nu)\\right|^2}
+            }
+        }
 
-The output of this process is a table containing, for each moving window: the
-central time lag, the measured delay, its error and the mean coherence of the
-segment.
+    where the over-bar denotes smoothing. The mean coherence per window is the
+    mean of :math:`C(\\nu)` over the frequency band.
+
+    The unwrapped phase of :math:`X(\\nu)` is linearly proportional to frequency:
+
+    .. math::
+
+        \\phi_j = 2\\pi\\,\\delta t\\,\\nu_j
+
+    so the time delay :math:`\\delta t` is the slope of a weighted linear
+    regression over the frequency band (:footcite:t:`Clarke2011`, extending
+    :footcite:t:`Poupinet1984`). Weights incorporate both cross-spectral
+    amplitude and coherence. The slope error is:
+
+    .. math::
+
+        e_m = \\sqrt{
+            \\sum_j \\left(
+                \\frac{w_j\\,\\nu_j}{\\sum_i w_i\\,\\nu_i^2}
+            \\right)^2 \\sigma_\\phi^2
+        }, \\qquad
+        \\sigma_\\phi^2 = \\frac{\\sum_j (\\phi_j - m\\,\\nu_j)^2}{N-1}
+
+    where :math:`w_j` are the per-sample weights and :math:`\\nu_j` are the
+    cross-coherences.
+
+    Returns one row per moving window: central lag time, :math:`\\delta t`,
+    error, and mean coherence.
 
 .. warning::
 

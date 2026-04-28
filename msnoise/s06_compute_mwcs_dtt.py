@@ -1,16 +1,28 @@
-"""Compute dt/t from MWCS measurements using weighted linear regression.
+r"""Compute dt/t from MWCS measurements using weighted linear regression.
 
 Reads the per-pair MWCS NetCDF files written by :mod:`msnoise.s05_compute_mwcs`
 and, for each time step, fits a weighted linear regression of the measured delay
 ``delta_t`` against lag time ``t``, following :footcite:t:`Clarke2011` (which
-extends :footcite:t:`Poupinet1984`), where
-``delta_t(t) = -(dv/v) * t + a``:
+extends :footcite:t:`Poupinet1984`):
+
+.. math::
+
+    \delta t(t) = -\frac{dv}{v}\, t + a
 
 Two fits are produced at each time step:
 
-- **Origin-forced** (``m0 / em0``): intercept fixed to zero, giving the
-  purest estimate of :math:`-dv/v`.
-- **With intercept** (``m / em / a / ea``): free intercept accounts for a
+- **Origin-forced** (``m0 / em0``): intercept :math:`a = 0`, giving the
+  purest estimate of :math:`-dv/v`:
+
+  .. math::
+
+      \frac{dv}{v} = -\frac{
+          \sum_j w_j\, t_j\, \delta t_j
+      }{
+          \sum_j w_j\, t_j^2
+      }
+
+- **With intercept** (``m / em / a / ea``): free :math:`a` accounts for a
   constant clock drift or instrumental offset.
 
 Before fitting, lag windows outside ``[minlag, minlag + width]`` are masked,

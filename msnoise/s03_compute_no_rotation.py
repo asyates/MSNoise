@@ -159,6 +159,38 @@ For each trace the shared ``_data_bp`` (already bandpassed to
 .. footcite:p:`Schimmel1999,Schimmel2011,Ventosa2019,Ventosa2023`
 
 
+Auto-Correlation (AC)
+---------------------
+
+When ``components_to_compute_single_station`` includes same-component pairs
+(e.g. ``ZZ``) and station indices satisfy :math:`i = j`, MSNoise computes
+the zero-offset autocorrelation function (ACF).  The ACF is the
+zero-lag cross-correlation of a trace with a time-delayed copy of itself:
+
+.. math::
+
+    C_{ii}(\\tau) = \\int_{-\\infty}^{\\infty}
+        d_i(t)\\, d_i(t + \\tau)\\, dt
+
+which is equivalent to the inverse Fourier transform of the power spectrum
+:math:`|X_i(\\nu)|^2`.  The ACF provides a *zero-offset reflection response*
+beneath the station — the same signal that would be recorded if the station
+were both source and receiver (:footcite:t:`Romero2018`).
+
+The algorithm (CC or PCC2) is selected independently for AC via
+``cc_type_single_station_AC``.  PCC2 is strongly recommended for AC because
+it suppresses the zero-lag spike inherent to the classical autocorrelogram
+and is insensitive to amplitude transients without requiring explicit
+temporal normalisation.
+
+.. note::
+
+    Spectral whitening must **not** be applied before AC (set
+    ``whitening = N`` when ``cc_type_single_station_AC = PCC``). Whitening
+    before autocorrelation collapses the ACF to a sinc function, destroying
+    all structural information.
+
+
 Stacking daily windows
 -----------------------
 

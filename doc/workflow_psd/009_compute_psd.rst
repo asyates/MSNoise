@@ -5,6 +5,8 @@ Compute Power Spectral Densities
 
 .. automodule::  msnoise.s20_psd_compute
 
+.. footbibliography::
+
 .. seealso::
 
    **Reading these results in Python** — use :class:`MSNoiseResult <msnoise.results.MSNoiseResult>`:
