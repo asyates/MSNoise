@@ -444,15 +444,26 @@ def run_workflow_plan(
         else:
             job_count = 0
 
-        # HPC: insert new_jobs --after unless this is the last runnable step
-        cat_info = chains.get(cat, {})
-        next_cats = cat_info.get("next_steps", []) if isinstance(cat_info, dict) else []
-        has_runnable_successor = any(
-            get_category_cli_command(nc) is not None
-            for nc in next_cats
-            if nc not in PASSTHROUGH
-        )
-        hpc_after = hpc and has_runnable_successor
+        # HPC: insert new_jobs --after unless this is the last runnable step.
+        # Walk transitively through PASSTHROUGH categories (e.g. filter → stack)
+        # so that cc correctly gets hpc_after=True even though its immediate
+        # successor is the passthrough "filter" step.
+        def _has_runnable_descendant(cat, _seen=None):
+            if _seen is None:
+                _seen = set()
+            if cat in _seen:
+                return False
+            _seen.add(cat)
+            info = chains.get(cat, {})
+            for nc in (info.get("next_steps", []) if isinstance(info, dict) else []):
+                if nc in PASSTHROUGH:
+                    if _has_runnable_descendant(nc, _seen):
+                        return True
+                elif get_category_cli_command(nc) is not None:
+                    return True
+            return False
+
+        hpc_after = hpc and _has_runnable_descendant(cat)
 
         plan.append(RunStep(
             category=cat,
