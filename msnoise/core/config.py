@@ -210,7 +210,7 @@ def update_config(session, name, value, plugin=None, category='global', set_numb
     else:
         config.value = value
     session.commit()
-    return
+    return config
 
 
 
