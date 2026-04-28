@@ -59,9 +59,9 @@ validation of our project ever ! See the full list on the
 PS: if you use MSNoise for your research and prepare publications, please
 consider citing it:
 
-**Lecocq, T., C. Caudron, et F. Brenguier (2014)**, MSNoise, a Python Package
-for Monitoring Seismic Velocity Changes Using Ambient Seismic Noise,
-*Seismological Research Letters*, 85(3), 715‑726, doi:10.1785/0220130073.
+Please cite :footcite:t:`Lecocq2014`.
+
+.. footbibliography::
 
 
 Web-based Admin Interface
@@ -166,9 +166,9 @@ power of the mean coherence array. If ``pws_power`` is equal to 0, a linear
 stack is done (then it's faster to do set ``stack_method`` = 'linear'). Usual
 value is 2.
 
-.. seealso:: Schimmel, M. and Paulssen H., "Noise reduction and detection
-    of weak, coherent signals through phase-weighted stacks". Geophysical
-    Journal International 130, 2 (1997): 497-505.
+.. seealso:: :footcite:t:`Schimmel1997` — phase-weighted stacks.
+
+.. footbibliography::
 
 The following example has been provided by Carmelo Sammarco (thanks for
 testing/debugging!, but COME ONE, why SAC ??!!).

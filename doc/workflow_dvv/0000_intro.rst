@@ -15,7 +15,8 @@ Each method is self-contained.  Run whichever chain(s) suit your use case.
 Method 1 — MWCS (3 steps)
 ---------------------------
 
-Moving-Window Cross-Spectrum → dt/t → dv/v aggregate.
+Moving-Window Cross-Spectrum → dt/t → dv/v aggregate
+(:footcite:t:`Clarke2011`; :footcite:t:`Poupinet1984`).
 
 .. toctree::
    :maxdepth: 1
@@ -31,7 +32,8 @@ Moving-Window Cross-Spectrum → dt/t → dv/v aggregate.
 Method 2 — Stretching (2 steps)
 ---------------------------------
 
-Direct dv/v by cross-correlating stretched reference traces → dv/v aggregate.
+Direct dv/v by cross-correlating stretched reference traces → dv/v aggregate
+(:footcite:t:`SensSchoenfelder2006`).
 
 .. toctree::
    :maxdepth: 1
@@ -44,7 +46,8 @@ Direct dv/v by cross-correlating stretched reference traces → dv/v aggregate.
 Method 3 — Wavelet Coherence Transform (2 or 3 steps)
 -------------------------------------------------------
 
-WCT → dt/t → dv/v aggregate.  When ``|wavelet.wct_compute_dtt|`` is
+WCT → dt/t → dv/v aggregate
+(:footcite:t:`Grinsted2004`; :footcite:t:`TorrenceCompo1998`).  When ``|wavelet.wct_compute_dtt|`` is
 ``True`` (default), the dt/t step runs inline inside the WCT step (fused,
 2 steps total).  Set it to ``False`` to run the dt/t step separately
 (3 steps total).
@@ -56,3 +59,5 @@ WCT → dt/t → dv/v aggregate.  When ``|wavelet.wct_compute_dtt|`` is
    ../workflow_dvv/010b_compute_wct_dtt
    ../workflow_dvv/010d_compute_wct_dtt_dvv
    ../workflow_dvv/010c_plot_wct
+
+.. footbibliography::
