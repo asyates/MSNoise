@@ -211,8 +211,13 @@ extensions = [
     'sphinx.ext.todo',
     'sphinx.ext.graphviz',
     'numpydoc',
+    'sphinxcontrib.bibtex',
     *([ 'sphinx_gallery.gen_gallery'] if _HAS_GALLERY else []),
 ]
+
+bibtex_bibfiles = ['refs.bib']
+bibtex_default_style = 'plain'
+bibtex_reference_style = 'author_year'
 
 sphinx_gallery_conf = {
      'examples_dirs': '../examples',

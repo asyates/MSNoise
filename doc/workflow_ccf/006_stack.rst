@@ -34,7 +34,7 @@ Set ``stack_method = linear`` in the stack or refstack configset.
 Phase-weighted stack (``pws``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Introduced by Schimmel & Paulssen (1997) [Schimmel1997]_.  Each sample is weighted by the
+Introduced by :footcite:t:`Schimmel1997`.  Each sample is weighted by the
 instantaneous *phase coherence* :math:`c(t)` of the analytic signal across
 all traces:
 
@@ -70,7 +70,7 @@ Practical notes:
 Time-frequency phase-weighted stack (``tfpws``)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The TF extension of PWS introduced by Schimmel & Gallart (2007) [Schimmel2007]_.  Phase
+The TF extension of PWS introduced by :footcite:t:`Schimmel2007`.  Phase
 coherence is evaluated independently at each scale of a continuous wavelet
 transform (CWT), yielding a time–frequency coherence map
 :math:`c(a, t)` that is both scale- and time-dependent.
@@ -114,7 +114,7 @@ The final stack is:
 
 Because coherence is assessed independently at each frequency, tf-PWS is
 more sensitive to narrow-band coherent arrivals than time-domain PWS.
-Romero & Schimmel (2018) [Romero2018]_ demonstrate this advantage for noise
+:footcite:t:`Romero2018` demonstrate this advantage for noise
 autocorrelations targeting shallow P-wave reflections (3–18 Hz), where
 amplitude-based transients from Pyrenean seismicity would otherwise corrupt
 the CCGN result.
@@ -157,6 +157,8 @@ Comparison
      - Narrow-band targets, autocorrelations
 
 
+
+.. footbibliography::
 
 .. seealso::
 

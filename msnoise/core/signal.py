@@ -1016,11 +1016,7 @@ def tfpws_stack(data, fs, freqmin, freqmax, power=2, nscales=20):
     :param nscales: Number of log-spaced CWT scales (default 20).
     :returns: 1-D array of length ``N_lags``.
 
-    References
-    ----------
-    Schimmel, M. & Gallart, J. (2007). Frequency-dependent phase coherence
-    for noise suppression in seismic array data. *Journal of Geophysical
-    Research*, 112, B04303. https://doi.org/10.1029/2006JB004680
+    .. footcite:p:`Schimmel2007`
     """
     from scipy.signal import fftconvolve
 
@@ -1061,7 +1057,7 @@ def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
         pre-processing.
 
     **Phase-weighted stack** (``"pws"``)
-        Introduced by Schimmel & Paulssen (1997) :ref:`Schimmel1997 <Schimmel1997>`.
+        Introduced by Schimmel & Paulssen (1997) :footcite:p:`Schimmel1997`.
         Each sample is weighted by the instantaneous phase coherence
         :math:`c(t)` of the analytic signal across all traces:
 
@@ -1087,7 +1083,7 @@ def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
 
     **Time-frequency phase-weighted stack** (``"tfpws"``)
         The TF extension of PWS by Schimmel & Gallart (2007)
-        :ref:`Schimmel2007 <Schimmel2007>`.  Phase coherence is computed in the
+        :footcite:p:`Schimmel2007`.  Phase coherence is computed in the
         time-frequency domain via a continuous wavelet transform (CWT)
         with a complex Morlet wavelet, giving a coherence map
         :math:`c(a, t)` that is both scale- and time-dependent.
@@ -1116,7 +1112,7 @@ def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
         to narrow-band coherent arrivals than time-domain PWS.  It is
         particularly effective for noise autocorrelations where body-wave
         reflections occupy a limited frequency band
-        (Romero & Schimmel 2018 :ref:`Romero2018 <Romero2018>`).
+        (Romero & Schimmel 2018 :footcite:p:`Romero2018`).
 
         .. note::
 

@@ -18,3 +18,4 @@ pandas
 logbook
 markdown
 sphinxcontrib-jquery
+sphinxcontrib-bibtex
