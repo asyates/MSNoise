@@ -299,7 +299,9 @@ def db():
                    'without prompting.')
 @click.option('--from-yaml', 'from_yaml', default=None, metavar='PATH',
               help='Seed config sets and links from a project YAML (category_N + after keys).')
-def db_init(tech, auto_workflow, from_yaml):
+@click.option('--yes', '-y', is_flag=True, default=False,
+              help='Skip interactive prompts, accepting all defaults (e.g. auto-create jobs).')
+def db_init(tech, auto_workflow, from_yaml, yes):
     """This command initializes the current folder to be a MSNoise Project
     by creating a database and a db.ini file."""
     click.echo('Launching the init')
@@ -310,12 +312,18 @@ def db_init(tech, auto_workflow, from_yaml):
 
     if from_yaml:
         import os
+        import datetime
         if not os.path.isfile(from_yaml):
             click.echo(f"Error: {from_yaml!r} not found.", err=True)
             return
         click.echo(f'\nSeeding project config from {from_yaml!r}...')
         from ..core.db import connect
-        from ..core.config import create_project_from_yaml
+        from ..core.config import create_project_from_yaml, get_config
+        from ..core.fdsn import is_remote_source
+        from ..msnoise_table_def import DataSource, Station
+        from ..core.stations import resolve_data_source, get_stations
+        from ..core.workflow import get_workflow_steps
+        from ..s02_new_jobs import update_job
         db = connect()
         try:
             created, warnings = create_project_from_yaml(db, from_yaml)
@@ -323,12 +331,54 @@ def db_init(tech, auto_workflow, from_yaml):
             click.echo(f"Error: {e}", err=True)
             db.close()
             return
-        db.close()
         click.echo(f'Created: {", ".join(created)}')
         for w in warnings:
             click.echo(f'Warning: {w}', err=True)
         click.echo('Setup complete!' if not warnings
                    else 'Setup complete (with warnings — check links in admin UI).')
+
+        # Offer to create preprocess jobs when datasource is remote and the
+        # date range has been explicitly set (non-default values).
+        _DEFAULT_START, _DEFAULT_END = "1970-01-01", "2100-01-01"
+        startdate = get_config(db, "startdate")
+        enddate   = get_config(db, "enddate")
+        all_ds = db.query(DataSource).all()
+        remote_ds = [d for d in all_ds if is_remote_source(d.uri or "")]
+        if remote_ds and startdate != _DEFAULT_START and enddate != _DEFAULT_END:
+            ds_names = ", ".join(d.name for d in remote_ds)
+            click.echo(f"\nDataSource(s) '{ds_names}' use remote FDSN/EIDA.")
+            if yes or click.confirm(
+                f"Create preprocess jobs for {startdate} → {enddate}?",
+                default=True,
+            ):
+                pre_steps = [s for s in get_workflow_steps(db)
+                             if s.category == "preprocess"]
+                if not pre_steps:
+                    click.echo("  No preprocess step found — skipping job creation.", err=True)
+                else:
+                    pre_step = pre_steps[0]
+                    start = datetime.date.fromisoformat(startdate)
+                    end   = datetime.date.fromisoformat(enddate)
+                    dates, cur = [], start
+                    while cur <= end:
+                        dates.append(cur.isoformat())
+                        cur += datetime.timedelta(days=1)
+                    n = 0
+                    for day in dates:
+                        for sta in get_stations(db, all=False):
+                            for loc in (sta.locs() or [""]):
+                                pair = f"{sta.net}.{sta.sta}.{loc}"
+                                update_job(db, day, pair, pre_step.step_name, "T",
+                                           step_id=pre_step.step_id,
+                                           lineage=pre_step.step_name,
+                                           commit=False)
+                                n += 1
+                        db.commit()
+                    click.echo(f"  Created {n} preprocess job(s) over {len(dates)} day(s).")
+            else:
+                click.echo(f"  Run later:  msnoise utils create_preprocess_jobs"
+                           f" --date_range {startdate} {enddate}")
+        db.close()
         return
 
     if auto_workflow or click.confirm(
