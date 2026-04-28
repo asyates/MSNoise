@@ -14,6 +14,7 @@ __all__ = [
     "is_remote_source",
     "parse_datasource_scheme",
     "get_auth",
+    "FDSNConnectionError",
 ]
 
 
@@ -22,6 +23,38 @@ import os
 import time
 
 logger = logging.getLogger("msnoise.fdsn")
+
+
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+class FDSNConnectionError(OSError):
+    """Raised when an FDSN request fails due to a connection-level error.
+
+    Distinct from :class:`~obspy.clients.fdsn.header.FDSNNoDataException`
+    (no matching data) and auth errors (wrong credentials).  Callers that
+    cache client objects should catch this, invalidate the cache, rebuild
+    the client, and retry.
+    """
+
+
+def _is_connection_error(exc) -> bool:
+    """Return True for errors that indicate a stale or broken connection."""
+    msg = str(exc)
+    # requests-level
+    try:
+        import requests.exceptions as _re
+        if isinstance(exc, (_re.ConnectionError, _re.Timeout,
+                            _re.ChunkedEncodingError)):
+            return True
+    except ImportError:
+        pass
+    # HTTP 503 / 504 from FDSN server
+    if any(code in msg for code in ("503", "504", "timed out", "reset", "broken pipe",
+                                     "RemoteDisconnected", "IncompleteRead")):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +163,7 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
     from obspy import Stream
 
     last_exc = None
+    last_is_conn = False
     for attempt in range(1, retries + 1):
         try:
             return client.get_waveforms_bulk(bulk_request)
@@ -141,6 +175,7 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
             # Auth failures are not transient
             if "401" in err_str or "403" in err_str or "Unauthorized" in err_str:
                 raise
+            last_is_conn = _is_connection_error(exc)
             wait = 2 ** attempt
             logger.warning(
                 f"FDSN bulk request failed (attempt {attempt}/{retries}): "
@@ -148,6 +183,10 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
             )
             time.sleep(wait)
 
+    if last_is_conn:
+        raise FDSNConnectionError(
+            f"FDSN connection lost after {retries} attempts: {last_exc}"
+        ) from last_exc
     logger.error(f"FDSN bulk request failed after {retries} attempts: {last_exc}")
     return Stream()
 
@@ -156,7 +195,8 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
 # High-level: fetch + optional raw cache + per-station result
 # ---------------------------------------------------------------------------
 
-def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None):
+def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None,
+                        client=None):
     """Fetch raw (unprocessed) waveforms from FDSN/EIDA for a batch of stations.
 
     Issues one ``get_waveforms_bulk`` call covering all stations in *jobs*,
@@ -216,8 +256,11 @@ def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None):
     )
 
     try:
-        client = build_client(ds)
+        if client is None:
+            client = build_client(ds)
         raw_stream = fetch_waveforms_bulk(client, bulk, retries=retries)
+    except FDSNConnectionError:
+        raise  # let caller invalidate the client cache and rebuild
     except FDSNNoDataException:
         log.warning(f"No data from {ds.name!r} for {goal_day}")
         return Stream()
@@ -239,7 +282,7 @@ def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None):
 
 
 def fetch_and_preprocess(
-    db, jobs, goal_day, params, responses=None, loglevel="INFO"
+    db, jobs, goal_day, params, responses=None, loglevel="INFO", client=None
 ):
     """Fetch waveforms from FDSN/EIDA for a batch of stations on one day.
 
@@ -267,7 +310,8 @@ def fetch_and_preprocess(
     t2 = t1 + 86400
 
     # Delegate the actual FDSN fetch (+ optional raw cache) to fetch_raw_waveforms
-    raw_stream = fetch_raw_waveforms(db, jobs, goal_day, params, t_start=t1, t_end=t2)
+    raw_stream = fetch_raw_waveforms(db, jobs, goal_day, params, t_start=t1, t_end=t2,
+                                     client=client)
 
     if not raw_stream:
         return Stream(), [], jobs

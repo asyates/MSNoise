@@ -27,7 +27,7 @@ from .core.db import connect, get_logger
 from .core.workflow import get_next_lineage_batch, is_next_job_for_step, massive_update_job
 from .core.signal import preload_instrument_responses, save_preprocessed_streams
 from .core.stations import resolve_data_source, get_station
-from .core.fdsn import is_remote_source, fetch_and_preprocess
+from .core.fdsn import is_remote_source, fetch_and_preprocess, build_client, FDSNConnectionError
 from .core.preprocessing import preprocess
 
 CATEGORY = "preprocess"
@@ -45,6 +45,10 @@ def main(loglevel="INFO"):
     logger.info('*** Starting: Preprocessing Step ***')
 
     db = connect()
+
+    # Cache FDSN clients keyed by DataSource.ref — built lazily, reused across days.
+    # Avoids re-opening HTTP connections for every day's batch.
+    _client_cache = {}
 
     while is_next_job_for_step(db, step_category=CATEGORY):
         batch = get_next_lineage_batch(db, step_category=CATEGORY,
@@ -89,10 +93,30 @@ def main(loglevel="INFO"):
                     f"DataSource {ds.name!r} is remote ({ds.uri}) — "
                     f"fetching via FDSN/EIDA"
                 )
-                stream, done_jobs, failed_jobs = fetch_and_preprocess(
-                    db, jobs, goal_day, params,
-                    responses=responses, loglevel=loglevel
-                )
+                if ds.ref not in _client_cache:
+                    logger.debug(f"Building FDSN client for DataSource {ds.name!r}")
+                    _client_cache[ds.ref] = build_client(ds)
+                for _attempt in range(2):
+                    try:
+                        stream, done_jobs, failed_jobs = fetch_and_preprocess(
+                            db, jobs, goal_day, params,
+                            responses=responses, loglevel=loglevel,
+                            client=_client_cache[ds.ref],
+                        )
+                        break
+                    except FDSNConnectionError as _e:
+                        if _attempt == 0:
+                            logger.warning(
+                                f"FDSN connection lost for {ds.name!r} "
+                                f"({_e}), rebuilding client and retrying."
+                            )
+                            _client_cache[ds.ref] = build_client(ds)
+                        else:
+                            logger.error(
+                                f"FDSN connection failed again after rebuild "
+                                f"for {ds.name!r} on {goal_day} — marking jobs Failed."
+                            )
+                            stream, done_jobs, failed_jobs = None, [], jobs
             else:
                 # ── Local / SDS path ─────────────────────────────────────────
                 stations = [job.pair for job in jobs]
