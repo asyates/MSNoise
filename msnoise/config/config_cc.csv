@@ -8,9 +8,10 @@ winsorizing,3.0,"Winsorizing at N time RMS , 0 disables winsorizing, -1 enables 
 whitening,A,"Whiten Traces before cross-correlation: [A]ll (except for autocorr), [N]one, or only if [C]omponents are different",str,A/N/C
 whitening_type,B,"Type of spectral whitening function to use: [B]rutal (amplitude to 1.0), divide spectrum by its [PSD] or by band-passing the white spectrum with a hanning-window [HANN]. WARNING: only works for compute_cc, not compute_cc_rot, where it will always be B",str,B/PSD/HANN
 clip_after_whiten,N,Do the clipping (winsorizing) after whitening?,bool,Y/N
-stack_method,linear,Stack Method: Linear Mean or Phase Weighted Stack,str,linear/pws
+stack_method,linear,Stack Method: Linear Mean or Phase Weighted Stack or Time-Frequency Phase Weighted Stack,str,linear/pws/tfpws
 pws_timegate,10.0,"If ``stack_method`` ='pws', width of the smoothing (in seconds)",float,
-pws_power,2.0,"If ``stack_method`` =""pws"", Power of the Weighting",float,
+pws_power,2.0,"If ``stack_method`` is ``pws`` or ``tfpws``, power of the coherence weight",float,
+tfpws_nscales,20,"Number of log-spaced CWT scales for tf-PWS daily stacking (``stack_method`` = tfpws only)",int,
 components_to_compute,ZZ,List (comma separated) of components to compute between two different stations,str,
 cc_type,CC,"Cross-Correlation type: CC for classical FFT-based correlation ; PCC for Phase Crosse Correlation (FastPCC's PCC2, Ventosa et al)",str,CC/PCC
 components_to_compute_single_station,,"List (comma separated) of components within a single station. ZZ would be the autocorrelation of Z component, while ZE or ZN are the cross-components. Defaults to [], no single-station computations are done.",str,

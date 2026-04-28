@@ -235,15 +235,14 @@ Stacking daily windows
 For each ``corr_duration``-long window, and for each configured filter, the
 CCF (CC or PCC2) is computed and accumulated.  If ``keep_all = Y`` the
 individual window CCFs are written to disk.  By default (``keep_days = Y``),
-all windows for the day are stacked into a single daily CCF using either a
-linear mean or Phase-Weighted Stack (PWS; Schimmel & Paulssen 1997):
+all windows for the day are stacked into a single daily CCF using
+``linear``, ``pws`` (:footcite:t:`Schimmel1997`), or ``tfpws``
+(:footcite:t:`Schimmel2007`) — controlled by ``stack_method``.
 
 .. note::
 
-    PWS is provided as an experimental option.  It has not been
-    systematically cross-validated.  Use with caution.
-
-.. footcite:p:`Schimmel1997`
+    PWS and tf-PWS are provided as experimental options.  They have not been
+    systematically cross-validated for CC/PCC daily stacking.  Use with caution.
 
 
 .. footbibliography::
@@ -640,6 +639,8 @@ def main(loglevel="INFO", chunk_size=0):
         filters = []
         for filter in filter_steps:
             filters.append([filter.step_name, get_config_set_details(db, filter.category, filter.set_number, format='AttribDict')])
+        # Lookup dict for tfpws: filter_name -> (freqmin, freqmax)
+        filter_freq = {name: (float(f.freqmin), float(f.freqmax)) for name, f in filters}
         logger.info("New CC Job: %s (%i pairs with %i stations)" %
                      (goal_day, len(pairs), len(stations)))
         jt = time.time()
@@ -1054,8 +1055,11 @@ def main(loglevel="INFO", chunk_size=0):
                 if not len(corrs):
                     logger.debug("No data to stack.")
                     continue
+                fmin, fmax = filter_freq.get(filter_name, (1.0, params.cc.cc_sampling_rate / 2))
                 corr = stack(corrs, params.cc.stack_method, params.cc.pws_timegate,
-                             params.cc.pws_power, params.cc.cc_sampling_rate)
+                             params.cc.pws_power, params.cc.cc_sampling_rate,
+                             freqmin=fmin, freqmax=fmax,
+                             tfpws_nscales=params.cc.tfpws_nscales)
                 if not len(corr):
                     logger.debug("No data to save.")
                     continue
