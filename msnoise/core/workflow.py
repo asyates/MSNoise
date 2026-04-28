@@ -857,15 +857,7 @@ def _get_or_create_lineage_id(session, lineage_str):
         row = session.query(Lineage).filter(
             Lineage.lineage_str == lineage_str).first()
     if row is not None:
-        return row.lineage_idif to_insert:
-    for chunk_start in range(0, len(to_insert), _CHUNK):
-        chunk = to_insert[chunk_start:chunk_start + _CHUNK]
-        try:
-            session.bulk_insert_mappings(Job, chunk)
-            session.flush()
-        except Exception:
-            session.rollback()
-    created = len(to_insert)
+        return row.lineage_id
 
     # 4. Truly new — insert and flush to get the generated ID
     try:
