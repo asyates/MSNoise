@@ -193,32 +193,38 @@ def main(stype, loglevel="INFO"):
                 # twice on GPFS (once for timestamp metadata, once for data) and
                 # gains no I/O parallelism due to HDF5's global thread lock —
                 # slower in practice despite lower peak RAM.
+                _t0 = time.time()
                 c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
                                           sta1, sta2, components, all_days)
+                logger.debug(f"  [timing] load CCF ({len(all_days)} days): {time.time()-_t0:.2f}s")
                 if not len(c):
                     logger.warning("No data found for %s-%s" % (sta1, sta2))
                     continue
+                _t0 = time.time()
                 dr = c.resample(times="%is" % params.cc.corr_duration).mean()
                 c.close()
                 del c  # free raw CCF data — dr is all we need from here
-                # Materialise daily means into RAM now.  dr is small
-                # (N_days × n_taxis) regardless of how many per-window
-                # files were loaded.  Without this, each mov_stack
-                # iteration re-triggers a full disk read via the dask graph.
                 dr = dr.compute()
+                logger.debug(f"  [timing] resample+compute → dr {dr['CCF'].shape}: {time.time()-_t0:.2f}s")
 
             else:
                 logger.warning("keep_all=N is unsupported in lineage workflow; "
                                "falling back to keep_days daily stacks")
+                _t0 = time.time()
                 c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
                                           sta1, sta2, components, all_days)
+                logger.debug(f"  [timing] load CCF keep_days ({len(all_days)} days): {time.time()-_t0:.2f}s")
+                _t0 = time.time()
                 dr = c.resample(times="1D").mean()
                 c.close()
                 del c  # free raw CCF data — dr is all we need from here
                 dr = dr.compute()
+                logger.debug(f"  [timing] resample+compute → dr {dr['CCF'].shape}: {time.time()-_t0:.2f}s")
 
             if wienerfilt:
+                _t0 = time.time()
                 dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold)
+                logger.debug(f"  [timing] wiener_filt: {time.time()-_t0:.2f}s")
 
             # Validate the resampled stack (dr), not the raw windowed data (c).
             # dr is what gets saved — it's smaller, already averaged, and the
@@ -234,19 +240,13 @@ def main(stype, loglevel="INFO"):
             excess_dates = pd.to_datetime(excess_days).values
             del excess_days  # numpy excess_dates is all we need from here
             for mov_stack in mov_stacks:
-                # if mov_stack > len(dr.times):
-                #     logger.error("not enough data for mov_stack=%i" % mov_stack)
-                #     continue
                 mov_rolling, mov_sample = mov_stack
-                # print(mov_rolling, mov_sample)
+                _t0 = time.time()
 
                 if mov_rolling == mov_sample:
-                    # just resample & mean
-                    xx = dr.resample(times=mov_sample, label="right", skipna=True).mean().dropna("times",
-                                                                                                   how="all")
+                    xx = dr.resample(times=mov_sample, label="right", skipna=True).mean().dropna("times", how="all")
                 else:
                     mov_rolling = pd.to_timedelta(mov_rolling).total_seconds()
-                    # print("Will roll over %i seconds" % mov_rolling)
                     if params.cc.keep_all:
                         duration_to_windows = mov_rolling / params.cc.corr_duration
                     else:
@@ -254,15 +254,17 @@ def main(stype, loglevel="INFO"):
                     if not duration_to_windows.is_integer():
                         logger.print("Warning, rounding down the number of windows to roll over")
                     duration_to_windows = int(max(1, math.floor(duration_to_windows)))
-                    # print("Which is %i windows of %i seconds duration" % (duration_to_windows, params.cc.corr_duration))
                     xx = dr.rolling(times=duration_to_windows, min_periods=1).mean("win")
                     xx = xx.resample(times=mov_sample, label="right", skipna=True).asfreq().dropna("times", how="all")
 
+                logger.debug(f"  [timing] rolling/resample {mov_stack}: {time.time()-_t0:.2f}s  shape={xx['CCF'].shape}")
                 mask = xx.times.dt.floor('D').isin(excess_dates)
-                xx_cleaned = xx.where(~mask, drop=True) #remove days not associated with current jobs
+                xx_cleaned = xx.where(~mask, drop=True)
 
+                _t0 = time.time()
                 xr_save_ccf(params.global_.output_folder, lineage_names, step.step_name,
                             sta1, sta2, components, mov_stack, taxis, xx_cleaned, overwrite=False)
+                logger.debug(f"  [timing] save {mov_stack}: {time.time()-_t0:.2f}s")
                 del xx, xx_cleaned
 
             del dr          # free resampled CCF dataset before next component

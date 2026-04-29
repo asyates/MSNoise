@@ -2870,8 +2870,15 @@ def utils_run_workflow(ctx, threads, hpc, from_category, until_category,
     msnoise_exe = [_msnoise_bin]
 
     def _step_argv(step):
-        """Full argv for a RunStep.  -t N is a top-level msnoise flag."""
-        base = msnoise_exe + (["-t", str(threads)] if threads != 1 else [])
+        """Full argv for a RunStep.  -t N and verbosity flags are top-level msnoise options."""
+        base = msnoise_exe[:]
+        if threads != 1:
+            base += ["-t", str(threads)]
+        verbosity = ctx.obj.get("MSNOISE_verbosity", "INFO")
+        if verbosity == "DEBUG":
+            base += ["-v"]
+        elif verbosity == "WARNING":
+            base += ["-q"]
         return base + step.cmd_tokens
 
     def _hpc_argv(category):
