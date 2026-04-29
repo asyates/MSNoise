@@ -209,24 +209,22 @@ for key, ds, color in zip(keys, [dvv_all[k] for k in keys], colors):
     label = f"{ms[0]}/{ms[1]}"
     times = ds["times"].values.astype("M8[ms]").astype(object)
 
-    dvv  = ds["dvv"].values * 100      # → %
-    err  = ds["err"].values * 100
+    dvv  = ds["mean"].values * 100     # → %
+    err  = ds["std"].values  * 100
 
     ax_dvv.plot(times, dvv, color=color, lw=1.2, label=label)
     ax_dvv.fill_between(times, dvv - err, dvv + err,
                         color=color, alpha=0.15)
 
-    for coh_var in ("coh", "m", "coherence"):
-        if coh_var in ds:
-            ax_coh.plot(times, ds[coh_var].values, color=color, lw=1.0)
-            break
+    if "n_pairs" in ds:
+        ax_coh.plot(times, ds["n_pairs"].values, color=color, lw=1.0)
 
 ax_dvv.axhline(0, color="k", lw=0.6, ls="--", alpha=0.4)
 ax_dvv.set_ylabel("dv/v (%)")
 ax_dvv.legend(title="mov_stack", ncol=3, fontsize=8)
 ax_dvv.set_title("dv/v — mwcs_dtt_dvv ZZ ALL pairs (2014 Lecocq / UnderVolc)")
 
-ax_coh.set_ylabel("Coherence / m")
+ax_coh.set_ylabel("N pairs")
 ax_coh.set_xlabel("Date")
 ax_coh.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
 fig.autofmt_xdate()
