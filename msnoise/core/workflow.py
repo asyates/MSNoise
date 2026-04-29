@@ -1271,12 +1271,14 @@ def massive_insert_job(session, jobs):
     session.commit()
 
 
-
 def massive_update_job(session, jobs, flag="D"):
     """
     Routine to use a low level function to update much faster a list of
     :class:`~msnoise.msnoise_table_def.declare_tables.Job`. This method uses the Job.ref
     which is unique.
+
+    Note: If session becomes invalid, will attempt to get a fresh session from the engine.
+
     :type session: Session
     :param session: the database connection object
     :type jobs: list or tuple
@@ -1290,13 +1292,15 @@ def massive_update_job(session, jobs, flag="D"):
     mappings = [{'ref': job.ref, 'flag': flag} for job in jobs]
     max_retries = 10
     retry_count = 0
-    session_recovered = False
+    session_reconnected = False
+    active_session = session
 
     while not updated and retry_count < max_retries:
         try:
-            session.bulk_update_mappings(Job, mappings)
-            session.commit()
+            active_session.bulk_update_mappings(Job, mappings)
+            active_session.commit()
             updated = True
+
         except OperationalError as e:
             # Database locked or temporary connection issue - retry with backoff
             retry_count += 1
@@ -1306,60 +1310,62 @@ def massive_update_job(session, jobs, flag="D"):
                 ) from e
             time.sleep(np.random.random() * (2 ** retry_count))  # exponential backoff
 
-            # Try to recover the session after a few retries
-            if retry_count >= 3 and not session_recovered:
+            # After a few retries, try to rollback the session
+            if retry_count >= 3:
                 try:
-                    session.rollback()
-                    session_recovered = True
+                    active_session.rollback()
                 except Exception:
                     pass  # rollback failed, continue with retries
 
-        except InvalidRequestError as e:
-            # Session is invalid/closed - try to recover once
-            if not session_recovered:
+        except (InvalidRequestError, Exception) as e:
+            # Session is invalid/closed or other error - try to get a fresh session from engine
+            if not session_reconnected:
                 try:
-                    # Attempt to rollback and get a fresh transaction
-                    session.rollback()
-                    session_recovered = True
+                    # Get the engine from the current session
+                    engine = active_session.get_bind()
+
+                    # Close the old session
+                    try:
+                        active_session.close()
+                    except Exception:
+                        pass
+
+                    # Create a new session from the engine
+                    from sqlalchemy.orm import sessionmaker
+                    Session = sessionmaker(bind=engine)
+                    active_session = Session()
+                    session_reconnected = True
                     retry_count += 1
+
                     if retry_count >= max_retries:
                         raise RuntimeError(
-                            f"Session was invalid and recovery failed after {max_retries} attempts"
+                            f"Failed to update jobs after session reconnection and {max_retries} retries"
                         ) from e
-                    time.sleep(0.5)
+
+                    time.sleep(1.0)
                     continue
+
                 except Exception as recovery_error:
                     raise RuntimeError(
-                        f"Session is no longer valid and cannot be recovered: {recovery_error}"
+                        f"Cannot reconnect to database: {recovery_error}"
                     ) from e
             else:
-                # Already tried recovery, this is a permanent failure
+                # Already reconnected session, this is a permanent failure
                 raise RuntimeError(
-                    "Session is no longer valid. Recovery was attempted but failed."
+                    f"Error persists after session reconnection: {type(e).__name__}: {e}"
                 ) from e
-
-        except Exception as e:
-            # Any other error - try rollback once then fail
-            if not session_recovered:
-                try:
-                    session.rollback()
-                    session_recovered = True
-                    retry_count += 1
-                    if retry_count < max_retries:
-                        time.sleep(1.0)
-                        continue
-                except Exception:
-                    pass  # rollback failed
-
-            # Either rollback failed or we already tried - give up
-            raise RuntimeError(
-                f"Unexpected error updating jobs: {type(e).__name__}: {e}"
-            ) from e
 
     if not updated:
         raise RuntimeError(
             f"Failed to update jobs after {max_retries} retries"
         )
+
+    # Clean up: if we created a new session, close it
+    if session_reconnected:
+        try:
+            active_session.close()
+        except Exception:
+            pass
 
     return
 
