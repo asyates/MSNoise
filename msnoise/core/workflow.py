@@ -1284,16 +1284,83 @@ def massive_update_job(session, jobs, flag="D"):
     :type flag: str
     :param flag: The destination flag.
     """
+    from sqlalchemy.exc import OperationalError, InvalidRequestError
+
     updated = False
     mappings = [{'ref': job.ref, 'flag': flag} for job in jobs]
-    while not updated:
+    max_retries = 10
+    retry_count = 0
+    session_recovered = False
+
+    while not updated and retry_count < max_retries:
         try:
             session.bulk_update_mappings(Job, mappings)
             session.commit()
             updated = True
-        except Exception:
-            time.sleep(np.random.random())
-            pass
+        except OperationalError as e:
+            # Database locked or temporary connection issue - retry with backoff
+            retry_count += 1
+            if retry_count >= max_retries:
+                raise RuntimeError(
+                    f"Failed to update jobs after {max_retries} retries due to database lock/connection issues"
+                ) from e
+            time.sleep(np.random.random() * (2 ** retry_count))  # exponential backoff
+
+            # Try to recover the session after a few retries
+            if retry_count >= 3 and not session_recovered:
+                try:
+                    session.rollback()
+                    session_recovered = True
+                except Exception:
+                    pass  # rollback failed, continue with retries
+
+        except InvalidRequestError as e:
+            # Session is invalid/closed - try to recover once
+            if not session_recovered:
+                try:
+                    # Attempt to rollback and get a fresh transaction
+                    session.rollback()
+                    session_recovered = True
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        raise RuntimeError(
+                            f"Session was invalid and recovery failed after {max_retries} attempts"
+                        ) from e
+                    time.sleep(0.5)
+                    continue
+                except Exception as recovery_error:
+                    raise RuntimeError(
+                        f"Session is no longer valid and cannot be recovered: {recovery_error}"
+                    ) from e
+            else:
+                # Already tried recovery, this is a permanent failure
+                raise RuntimeError(
+                    "Session is no longer valid. Recovery was attempted but failed."
+                ) from e
+
+        except Exception as e:
+            # Any other error - try rollback once then fail
+            if not session_recovered:
+                try:
+                    session.rollback()
+                    session_recovered = True
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        time.sleep(1.0)
+                        continue
+                except Exception:
+                    pass  # rollback failed
+
+            # Either rollback failed or we already tried - give up
+            raise RuntimeError(
+                f"Unexpected error updating jobs: {type(e).__name__}: {e}"
+            ) from e
+
+    if not updated:
+        raise RuntimeError(
+            f"Failed to update jobs after {max_retries} retries"
+        )
+
     return
 
 
