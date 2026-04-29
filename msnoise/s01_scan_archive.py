@@ -104,10 +104,9 @@ def update_availability(db, folder, basename, data):
     :param basename: the basename of the miniseed file to read data from
     :param data: obspy.core.stream.Stream object for the channel
     """
-    gaps = data.get_gaps()
+    # gaps_duration is stored but never read by any processing step —
+    # skip the expensive get_gaps() merge+sort.
     gaps_duration = 0
-    for gap in gaps:
-        gaps_duration += gap[6]
 
     data_duration = 0
     start = datetime.datetime(year=2100, month=1, day=1)
@@ -172,26 +171,22 @@ def process_stream(db, folder, basename, stream, id_, startdate, enddate,
 
 
 def scan_data_files(db, folder, files, startdate, enddate, goal_sampling_rate,
-                    archive_format, logger):
+                    archive_format, logger, stations=None, station_map=None):
     """
     Processes a list of files from a folder, and update the data availability
     table in the database whenever their data matches our dates and sampling
     rate parameters.
 
-    :param db: the sqlalchemy session object.
-    :param folder: the directory where lies the miniseed files.
-    :param files: the list of files of the folder to read.
-    :param stream: unfiltered obspy.core.stream.Stream object.
-    :param id_: the id of the stream to read.
-    :param startdate: the startdate configuration value.
-    :param enddate: the enddate configuration value.
-    :param goal_sampling_rate: the sampling rate.
-    :paran logger: the logger instance to use for logging.
+    :param stations: pre-fetched station list (avoids per-folder DB query).
+    :param station_map: pre-built ``{(net, sta): Station}`` dict for O(1) lookup.
     """
     added = 0
     modified = 0
     unchanged = 0
-    stations = api.get_stations(db)
+    if stations is None:
+        stations = api.get_stations(db)
+    if station_map is None:
+        station_map = {(s.net.upper(), s.sta.upper()): s for s in stations}
     for basename in files:
         pathname = os.path.join(folder, basename)
         # logger.debug('reading file %s' % pathname)
@@ -202,11 +197,7 @@ def scan_data_files(db, folder, files, startdate, enddate, goal_sampling_rate,
             for id in set([t.id for t in stream]):
                 net, sta, loc, chan = id.split('.')
                 logger.debug("read file %s, id: %s" % (pathname, id))
-                tmp = None
-                for station in stations:
-                    if station.net == net and station.sta == sta:
-                        tmp = station
-                        break
+                tmp = station_map.get((net.upper(), sta.upper()))
                 if tmp is not None:
                     if tmp.used_location_codes is None:
                         location_codes = ["*"]
@@ -305,6 +296,9 @@ def scan_folders(folders, mintime, startdate, enddate, goal_sampling_rate,
     logger = api.get_logger('msnoise.scan_archive', logger.level,
                             with_pid=True)
     db = api.connect()
+    # Fetch stations once per worker — avoids a DB round-trip per folder.
+    stations = api.get_stations(db)
+    station_map = {(s.net.upper(), s.sta.upper()): s for s in stations}
     for folder in folders:
         logger.debug('scanning dir %s' % folder)
         if not os.path.isdir(folder):
@@ -322,7 +316,7 @@ def scan_folders(folders, mintime, startdate, enddate, goal_sampling_rate,
         if files:
             scan_data_files(db, folder, files, startdate, enddate,
                             goal_sampling_rate, archive_format, logger,
-                            )
+                            stations=stations, station_map=station_map)
         # else: no matching files found in this directory, nothing to do
     db.close()
 
