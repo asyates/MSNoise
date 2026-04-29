@@ -152,7 +152,8 @@ class MSNoiseProject:
                           scanning the extracted ``_output/`` tree.  Only
                           needed when continuing the pipeline after importing
                           a project archive.
-        :raises NotImplementedError: ``with_jobs=True`` is reserved for P4.
+        :raises NotImplementedError: if ``with_jobs=True`` but ``meta.yaml``
+                                     is absent from the project directory.
         """
         import subprocess
         from .core.db import connect
