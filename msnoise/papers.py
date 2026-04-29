@@ -1,10 +1,11 @@
 """MSNoise Reproducible Papers (MRP) client.
 
-Provides programmatic access to the ``MSNoise_Reproducible_Papers`` registry —
-a curated collection of ``project.yaml`` files and optional data bundles that
+Provides programmatic access to the `MSNoise Reproducible Papers
+<https://github.com/ROBelgium/MSNoise_Reproducible_Papers>`_ registry — a
+curated collection of ``project.yaml`` files and optional data bundles that
 reproduce published studies using MSNoise.
 
-Typical usage::
+Quick start::
 
     from msnoise.papers import MRP
 
@@ -14,13 +15,70 @@ Typical usage::
     paper = mrp.get_paper("2016_DePlaen_PitonDeLaFournaise")
     paper.info()
 
-    # Download the stack-level archive and get an MSNoiseProject
+    # Downloads the archive on first call; cached locally afterwards.
     project = paper.get_project("stack")
     for result in project.list("stack"):
         ds = result.get_ccf()
 
-Registry source:
-    https://github.com/ROBelgium/MSNoise_Reproducible_Papers
+The returned :class:`~msnoise.project.MSNoiseProject` is identical to one
+obtained via :meth:`~msnoise.project.MSNoiseProject.from_archive` — all
+``get_*`` methods work without a database connection.
+
+Browsing available papers
+--------------------------
+
+:meth:`MRP.list_papers` prints a table of all papers in the registry::
+
+    mrp = MRP()
+    mrp.list_papers()
+    # ID                                    Year  Net       Levels          ✓
+    # 2016_DePlaen_PitonDeLaFournaise       2016  PF......  stack, dvv      ✅
+
+Loading a paper
+---------------
+
+::
+
+    paper = mrp.get_paper("2016_DePlaen_PitonDeLaFournaise")
+    paper.info()
+    # Paper:   2016_DePlaen_PitonDeLaFournaise
+    # journal_abbrev: GRL
+    # ...
+    # bundle_levels_available: ['stack', 'dvv']
+
+Papers with multiple datasets (e.g. two volcanoes) expose multiple project
+files.  Pass ``project=`` to disambiguate::
+
+    paper = mrp.get_paper("2023_Yates_PitonRuapehu")
+    project_pdf     = paper.get_project("dvv", project="pdf")
+    project_ruapehu = paper.get_project("dvv", project="ruapehu")
+
+Cache management
+-----------------
+
+Downloaded archives are stored in the platform user-cache directory
+(``~/.cache/msnoise-mrp/`` on Linux).  To free space::
+
+    mrp.clear_cache("2016_DePlaen_PitonDeLaFournaise")  # one paper
+    mrp.clear_cache()                                    # all archives
+
+Registry metadata and small paper files are never deleted by
+:meth:`MRP.clear_cache`.  To force a fresh registry download::
+
+    mrp = MRP(force_refresh=True)
+
+Contributing a paper
+---------------------
+
+See the `CONTRIBUTING guide
+<https://github.com/ROBelgium/MSNoise_Reproducible_Papers/blob/main/CONTRIBUTING.md>`_
+in the registry repository.  In brief:
+
+1. Fork the repo, create ``papers/<YYYY_Author_Title>/``
+2. Add ``project.yaml``, ``citation.bib``, ``meta.yaml``, ``README.md``
+3. Run ``python scripts/update_registry.py && python scripts/update_readme.py``
+4. Open a PR — CI validates schemas and runs ``msnoise db init`` on every
+   ``project*.yaml``
 """
 from __future__ import annotations
 

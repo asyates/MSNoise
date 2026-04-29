@@ -5,8 +5,63 @@ at a given pipeline level (preprocess / cc / stack / dvv …).  It is distinct
 from an :class:`~msnoise.results.MSNoiseResult` *result bundle* (single
 lineage, ``params.yaml`` + ``_output/``).
 
-This module handles only raw filesystem operations (extract, list, checksum).
-Higher-level logic lives in :mod:`msnoise.project`.
+This module handles filesystem operations (extract, export, checksum, job
+reconstruction).  Higher-level logic lives in :mod:`msnoise.project`.
+
+Archive format
+--------------
+
+Every ``.tar.zst`` archive has this internal layout::
+
+    meta.yaml              ← {entry_level, msnoise_version, created_at, project_name}
+    MANIFEST.json          ← {relative_path: {sha256, size_bytes}} for every file
+    project.yaml           ← full MSNoise config (importable)
+    <lineage>/<step>/_output/...   ← pipeline outputs
+    <lineage>/<step>/params.yaml   ← per-lineage params (enables DB-free access)
+
+Paths inside the archive are relative to the project root, so extraction into
+any directory produces a valid project tree.
+
+``bundle_pointer.yaml`` format
+-------------------------------
+
+::
+
+    msnoise_version_min: "2.0.1"
+    created_at: "2026-04-01"
+    levels:
+      stack:
+        description: "Stacked CCFs + refstacks for all filter sets"
+        url: "https://ftp.seismology.be/msnoise/study/level_stack.tar.zst"
+        sha256: "a1b2c3d4…"
+        size_gb: 6.8
+      dvv:
+        description: "Final DVV aggregates and per-pair series"
+        url: "https://zenodo.org/record/XXXXXXX/files/level_dvv.tar.zst"
+        sha256: "d4e5f6…"
+        size_gb: 0.3
+
+``url`` must be a plain HTTPS URL; ``sha256`` is the hash of the
+``.tar.zst`` file itself (printed by :func:`export_project` on completion).
+
+Typical workflow
+----------------
+
+Export::
+
+    from msnoise.core.project_io import export_project
+    sha = export_project("/path/to/project", "stack", "/data/level_stack.tar.zst")
+    # prints sha256 — paste into bundle_pointer.yaml
+
+Import (Python)::
+
+    from msnoise.core.project_io import import_project_archive
+    root = import_project_archive("bundle_pointer.yaml", "stack", "./my_project")
+
+Import (CLI)::
+
+    msnoise project import --from bundle_pointer.yaml --level stack \\
+        --project-dir ./my_project --with-jobs
 """
 from __future__ import annotations
 

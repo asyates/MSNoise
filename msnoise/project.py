@@ -1,25 +1,125 @@
 """MSNoiseProject — unified entry point for accessing MSNoise results.
 
-Provides a single object through which :class:`~msnoise.results.MSNoiseResult`
-objects are obtained, regardless of whether the data comes from a local live
-project, an extracted project archive, or a paper downloaded from the MSNoise
-Reproducible Papers registry.
+:class:`MSNoiseProject` is the single entry point for reading MSNoise results
+— regardless of whether data lives in a local live project, a project archive
+on disk, or a paper from the MSNoise Reproducible Papers registry.
 
-Typical usage::
+All three paths converge on the same API::
 
-    # A — live project (cwd contains msnoise.ini / db.ini)
+    # A — live project (cwd contains db.ini)
+    from msnoise.project import MSNoiseProject
     project = MSNoiseProject.from_current()
 
-    # B — project archive on disk
+    # B — local project archive
     project = MSNoiseProject.from_archive("level_stack.tar.zst")
 
-    # C — MSNoise Reproducible Papers registry (see msnoise.papers)
+    # C — MSNoise Reproducible Papers (auto-download)
     from msnoise.papers import MRP
     project = MRP().get_paper("2016_DePlaen_PitonDeLaFournaise").get_project("stack")
 
     # identical from here — all three paths
     for result in project.list("stack"):
-        ccfs = result.get_ccf()
+        ds = result.get_ccf()
+
+
+Project archives vs result bundles
+------------------------------------
+
+Two distinct archive types exist in MSNoise 2.x:
+
+* **Project archive** (``.tar.zst``) — full multi-lineage project at a given
+  *entry level*, containing all filter / stack branches.  Produced by
+  ``msnoise project export``, consumed by ``msnoise project import`` or
+  :meth:`MSNoiseProject.from_archive`.
+
+* **Result bundle** (directory or ``.zip``) — single-lineage portable export:
+  ``params.yaml`` + ``_output/``.  Produced and consumed by
+  :meth:`~msnoise.results.MSNoiseResult.export_bundle` /
+  :meth:`~msnoise.results.MSNoiseResult.from_bundle`.
+
+Entry levels
+------------
+
+A project archive is created at a specific *entry level* — the lowest
+pipeline step whose outputs are included.
+
+================  ===========================================  ===========================
+Level             What is bundled                              Resume from …
+================  ===========================================  ===========================
+``preprocess``    SDS waveform cache                           ``cc`` onwards
+``cc``            Raw CCF NetCDFs                              ``stack`` + ``refstack``
+``stack``         Stacked CCFs + reference stacks              ``mwcs``, ``stretching``, ``wavelet``
+``mwcs``          MWCS + DTT outputs                           ``mwcs_dtt_dvv``
+``stretching``    Stretching outputs                           ``stretching_dvv``
+``wavelet``       WCT + WCT-DTT outputs                        ``wavelet_dtt_dvv``
+``dvv``           Final dv/v aggregates + per-pair series      Notebooks only
+================  ===========================================  ===========================
+
+``stack`` and ``refstack`` outputs are always bundled together.
+
+Exporting a project archive
+----------------------------
+
+Run from the project root after the pipeline has finished::
+
+    msnoise project export --level stack --output /data/level_stack.tar.zst
+
+The command prints the archive SHA-256 to paste into ``bundle_pointer.yaml``.
+No database connection is needed — only the ``_output/`` tree and
+``project.yaml`` are read.
+
+Python equivalent::
+
+    from msnoise.core.project_io import export_project
+    sha = export_project("/path/to/project", "stack", "/data/level_stack.tar.zst")
+
+Importing a project archive
+----------------------------
+
+Download, verify, extract, and initialise the database in one step::
+
+    msnoise project import \\
+        --from bundle_pointer.yaml \\
+        --level stack \\
+        --project-dir ./my_project \\
+        --with-jobs
+
+``--with-jobs`` reconstructs ``flag=D`` jobs from the ``_output/`` tree so
+the pipeline can be resumed immediately afterwards::
+
+    msnoise new_jobs --after stack
+
+Reading results without a database
+------------------------------------
+
+:meth:`MSNoiseProject.list` is always filesystem-based — no database needed::
+
+    project = MSNoiseProject.from_project_dir("/path/to/extracted")
+    results = project.list("stack")
+
+    for result in results:
+        print(result.lineage_names)   # ['global_1', ..., 'stack_1']
+        ds = result.get_ccf(component="ZZ", mov_stack=("1D", "1D"))
+
+    # Traverse to child steps (folder scan, no DB)
+    for result in results:
+        for branch in result.branches():
+            print(branch.category, branch.lineage_names[-1])
+
+Resuming the pipeline
+----------------------
+
+To continue running the pipeline after importing an archive::
+
+    # via CLI (recommended)
+    msnoise project import --from bundle_pointer.yaml --level stack \\
+        --project-dir ./my_project --with-jobs
+
+    # via Python
+    project = MSNoiseProject.from_archive("level_stack.tar.zst",
+                                          project_dir="./my_project")
+    project.init_db(with_jobs=True)
+    db = project.db   # SQLAlchemy session now available
 """
 from __future__ import annotations
 
