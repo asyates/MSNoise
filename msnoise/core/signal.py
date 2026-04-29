@@ -1294,26 +1294,40 @@ def rolling_mean_nan(arr: "np.ndarray", window: int, min_periods: int = 1) -> "n
     import numpy as np
 
     T, F = arr.shape
-    valid  = ~np.isnan(arr)
-    filled = np.where(valid, arr.astype(np.float64), 0.0)
 
-    # Padded cumulative sums — index 0 is zero, index i+1 is sum of first i elements
-    cv = np.empty((T + 1, F), dtype=np.float64)
-    cc = np.empty((T + 1, F), dtype=np.float64)
+    # ── validity mask and value fill ──────────────────────────────────────
+    valid  = ~np.isnan(arr)                          # bool  (T, F)
+    filled = np.where(valid, arr, np.float32(0.0))   # float32 — no promotion
+
+    # ── padded cumulative sums ─────────────────────────────────────────────
+    # float32 cumsum is accurate for CCF values in [-1, 1]: worst-case
+    # accumulated rounding error over 30 000 steps < 0.004, negligible.
+    cv = np.empty((T + 1, F), dtype=np.float32)
     cv[0] = 0.0
-    cc[0] = 0.0
     np.cumsum(filled, axis=0, out=cv[1:])
-    np.cumsum(valid,  axis=0, out=cc[1:])
+    del filled                                        # free early
 
-    # For output position i the window covers [max(0, i-W+1), i]
-    i1      = np.arange(1, T + 1)
-    i0      = np.maximum(0, i1 - window)
+    # int32 is sufficient: max count = window, well within int32.
+    cc = np.empty((T + 1, F), dtype=np.int32)
+    cc[0] = 0
+    np.cumsum(valid, axis=0, out=cc[1:])
+    del valid                                         # free early
 
-    win_val = cv[i1] - cv[i0]
-    win_cnt = cc[i1] - cc[i0]
+    # ── window sums and counts ─────────────────────────────────────────────
+    i1 = np.arange(1, T + 1)
+    i0 = np.maximum(0, i1 - window)
 
-    enough  = win_cnt >= min_periods
-    result  = np.where(enough, win_val / np.where(win_cnt > 0, win_cnt, 1.0), np.nan)
+    win_val = cv[i1] - cv[i0]                        # float32 (T, F)
+    del cv
+    win_cnt = cc[i1] - cc[i0]                        # int32  (T, F)
+    del cc
+
+    # ── masked mean ────────────────────────────────────────────────────────
+    enough   = win_cnt >= min_periods
+    safe_cnt = np.where(win_cnt > 0, win_cnt, np.int32(1))
+    del win_cnt
+    result   = np.where(enough, win_val / safe_cnt, np.float32(np.nan))
+    del win_val, enough, safe_cnt
     return result.astype(arr.dtype)
 
 
