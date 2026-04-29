@@ -229,10 +229,14 @@ def propagate_stack_jobs_from_cc_done(session):
     # --- Find already-existing STACK jobs for these step_ids ------------------
     stack_step_ids = list({k[0] for k in desired})
 
-    # Fetch all existing jobs for those step_ids in one query
+    # Only load existing rows for the days we intend to insert — O(desired)
+    # instead of O(all_jobs).  We cannot miss a match: any key NOT in
+    # desired_days is, by construction, absent from desired too.
+    desired_days = list({k[1] for k in desired})
     existing_rows = (
         session.query(Job.ref, Job.step_id, Job.day, Job.pair, Job.lineage_id, Job.flag)
         .filter(Job.step_id.in_(stack_step_ids))
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     existing_map: dict = {}   # (step_id, day, pair, lineage_id) -> (ref, flag)
@@ -506,11 +510,12 @@ def propagate_mwcs_jobs_from_stack_done(session):
         return 0
 
     dvv_step_ids = list({k[0] for k in desired})
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id.in_(dvv_step_ids))
-        .filter(Job.day != "REF").filter(Job.day != "DVV")
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -669,12 +674,12 @@ def propagate_mwcs_jobs_from_refstack_done(session):
         return 0
 
     dvv_step_ids = list({k[0] for k in desired})
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id.in_(dvv_step_ids))
-        .filter(Job.day != "REF")
-        .filter(Job.day != "DVV")
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -862,11 +867,13 @@ def create_passthrough_jobs_from_done_parent(session, parent_step, child_step):
     if not desired:
         return 0
 
-    # One bulk SELECT for existing child jobs
+    # Only load existing rows for the days we intend to insert — O(desired)
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id == child_step.step_id)
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -957,12 +964,14 @@ def propagate_psd_rms_jobs_from_psd_done(session):
         logger.info("[--after psd] PSD_RMS jobs created: 0")
         return 0
 
-    # One bulk SELECT for all existing psd_rms jobs
+    # Only load existing rows for the days we intend to insert — O(desired)
     psd_rms_step_ids = list({k[0] for k in desired})
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id.in_(psd_rms_step_ids))
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
