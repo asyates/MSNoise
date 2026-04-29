@@ -428,3 +428,56 @@ class MSNoiseProject:
             results.append(inst)
 
         return results
+
+    def get_stations(self) -> list:
+        """Return station list as :class:`obspy.core.util.attribdict.AttribDict` objects.
+
+        If a DB session is available (:meth:`from_current`), queries the
+        ``Station`` table.  Otherwise parses ``project.yaml`` from
+        :attr:`project_dir` — works in DB-free archive mode.
+
+        Each item exposes ``net``, ``sta``, ``X``, ``Y``, ``altitude``,
+        ``coordinates`` attributes, compatible with
+        :func:`~msnoise.core.stations.get_interstation_distance`.
+        """
+        from obspy.core.util.attribdict import AttribDict
+
+        if self._db is not None:
+            from msnoise.api import get_stations as _get_stations
+            return _get_stations(self._db)
+
+        import yaml
+        yaml_path = Path(self.project_dir) / "project.yaml"
+        if not yaml_path.exists():
+            raise FileNotFoundError(
+                f"project.yaml not found in {self.project_dir}. "
+                "Connect a DB via init_db() or ensure project.yaml exists."
+            )
+        with open(yaml_path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        return [AttribDict(s) for s in doc.get("stations", [])]
+
+    def get_distance(self, pair: str) -> float:
+        """Return interstation distance in km for *pair*.
+
+        :param pair: Station pair in ``"NET.STA.LOC:NET.STA.LOC"`` format.
+        :returns: Distance in kilometres.
+        :raises KeyError: if either station is not found.
+        """
+        from msnoise.core.stations import get_interstation_distance
+
+        sta1_id, sta2_id = pair.split(":")
+        n1, s1 = sta1_id.split(".")[:2]
+        n2, s2 = sta2_id.split(".")[:2]
+
+        stations = {f"{st.net}.{st.sta}": st for st in self.get_stations()}
+        key1, key2 = f"{n1}.{s1}", f"{n2}.{s2}"
+        if key1 not in stations:
+            raise KeyError(f"Station {key1!r} not found in project")
+        if key2 not in stations:
+            raise KeyError(f"Station {key2!r} not found in project")
+
+        st1, st2 = stations[key1], stations[key2]
+        coords = getattr(st1, "coordinates", "DEG")
+        return get_interstation_distance(st1, st2, coordinates=coords)
+
