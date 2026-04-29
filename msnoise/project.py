@@ -383,17 +383,23 @@ class MSNoiseProject:
             import csv as _csv
             from pathlib import Path as _Path
             _cfg_dir = _Path(__file__).parent / "config"
+            _type_map = {"float": float, "int": int, "bool": bool, "str": str}
             _layers = object.__getattribute__(params, "_layers")
             for _cat, _layer in list(_layers.items()):
                 _csv_path = _cfg_dir / f"config_{_cat}.csv"
                 if not _csv_path.exists():
                     continue
                 with open(_csv_path, newline="", encoding="utf-8") as _fh:
-                    _defs = {r["name"]: r["default"] for r in _csv.DictReader(_fh)}
-                # Only set keys that are genuinely missing
-                for _k, _v in _defs.items():
+                    _rows = list(_csv.DictReader(_fh))
+                for _row in _rows:
+                    _k = _row["name"]
                     if not hasattr(_layer, _k):
-                        _layer[_k] = _v
+                        _v = _row["default"]
+                        _cast = _type_map.get(_row.get("type", "str"), str)
+                        try:
+                            _layer[_k] = _cast(_v)
+                        except (ValueError, TypeError):
+                            _layer[_k] = _v
 
             # Construct MSNoiseResult directly — bypass from_bundle's
             # unconditional output_folder override.
