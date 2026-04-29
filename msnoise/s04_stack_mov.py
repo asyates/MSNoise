@@ -54,7 +54,7 @@ import pandas as pd
 from .core.db import connect, get_logger
 from .core.workflow import (get_next_lineage_batch, get_t_axis, is_next_job_for_step, massive_update_job, propagate_downstream)
 from .core.signal import validate_stack_data
-from .core.io import xr_load_ccf_for_stack, xr_save_ccf
+from .core.io import xr_load_ccf_for_stack, xr_open_ccf_mfdataset, xr_save_ccf
 from .core.signal import wiener_filt
 
 
@@ -184,8 +184,23 @@ def main(stype, loglevel="INFO"):
             excess_days = sorted(set(excess_days))
 
             if params.cc.keep_all:
-                c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
-                                          sta1, sta2, components, all_days)
+                # Use lazy dask-backed loading when Wiener filter is off —
+                # peak RAM becomes O(rolling_window) rather than O(full series).
+                # Falls back to eager if dask is unavailable or no files found.
+                if not wienerfilt:
+                    c = xr_open_ccf_mfdataset(
+                        params.global_.output_folder, lineage_names,
+                        sta1, sta2, components, all_days,
+                        chunk_size=max(1, int(86400 / max(params.cc.corr_duration, 1))),
+                    )
+                    if c is None:
+                        logger.debug("Lazy load unavailable — falling back to eager")
+                        c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
+                                                  sta1, sta2, components, all_days)
+                else:
+                    # Wiener filter calls .values — must load eagerly
+                    c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
+                                              sta1, sta2, components, all_days)
                 if not len(c):
                     logger.warning("No data found for %s-%s" % (sta1, sta2))
                     continue

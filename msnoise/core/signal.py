@@ -56,8 +56,10 @@ def validate_stack_data(dataset, stack_type="reference"):
     if data.size == 0:
         return False, f"Empty dataset in {stack_type} stack"
 
-    nan_count = np.isnan(data.values).sum()
-    total_points = data.values.size
+    # Use xarray .isnull() so this works on both numpy and dask-backed arrays.
+    # data.values on a dask array would load the entire dataset into RAM.
+    nan_count = int(data.isnull().sum().values)
+    total_points = data.size
 
     if nan_count == total_points:
         return False, f"{stack_type.capitalize()} stack contains only NaN values"

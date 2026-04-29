@@ -459,6 +459,73 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
     )
 
 
+def xr_open_ccf_mfdataset(root, lineage_names, station1, station2, components, dates,
+                           chunk_size: int = 24):
+    """Open per-day CCF files as a **lazy, dask-backed** Dataset.
+
+    Unlike :func:`xr_load_ccf_for_stack`, no data is loaded into RAM until an
+    operation explicitly requests it.  Peak memory is proportional to the
+    rolling-window size rather than the full time series length.
+
+    Only the ``keep_all`` (per-window) path is supported.  Returns ``None``
+    when dask is not installed or no ``keep_all`` files exist — the caller
+    should fall back to :func:`xr_load_ccf_for_stack`.
+
+    :param root:          Output folder (``params.global_.output_folder``).
+    :param lineage_names: Full lineage including the filter step.
+    :param station1:      First station SEED id.
+    :param station2:      Second station SEED id.
+    :param components:    Component pair string e.g. ``"ZZ"``.
+    :param dates:         Iterable of dates or ISO strings.
+    :param chunk_size:    Dask chunk size along the ``times`` dimension
+                          (default 24 — one day of hourly windows).
+    :returns:             Lazy :class:`xarray.Dataset` with ``CCF`` variable
+                          and dims ``(times, taxis)``, or ``None`` if lazy
+                          loading is unavailable.
+    """
+    try:
+        import dask  # noqa: F401
+    except ImportError:
+        return None
+
+    cc_idx = next(
+        (i for i, n in enumerate(lineage_names) if n.startswith("cc_")), None
+    )
+    if cc_idx is None or cc_idx + 1 >= len(lineage_names):
+        return None
+    cc_lineage = lineage_names[:cc_idx + 1]
+    filter_step = lineage_names[cc_idx + 1]
+
+    paths = []
+    for date in dates:
+        date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
+        fn = os.path.join(root, *cc_lineage, filter_step, "_output",
+                          "all", components,
+                          f"{station1}_{station2}", f"{date_str}.nc")
+        if os.path.isfile(fn):
+            paths.append(fn)
+
+    if not paths:
+        return None
+
+    try:
+        ds = xr.open_mfdataset(
+            paths,
+            concat_dim="times",
+            combine="nested",
+            chunks={"times": chunk_size},
+            engine="netcdf4",
+        )
+        if "CCF" not in ds and len(ds.data_vars) == 1:
+            ds = ds.rename({next(iter(ds.data_vars)): "CCF"})
+        return ds
+    except Exception as exc:
+        logging.getLogger("msnoise.io").debug(
+            f"open_mfdataset failed for {station1}/{station2} {components}: {exc}"
+        )
+        return None
+
+
 # ── MWCS ────────────────────────────────────────────────────
 
 
