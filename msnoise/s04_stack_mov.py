@@ -182,6 +182,9 @@ def main(stype, loglevel="INFO"):
 
             all_days = sorted(set(all_days))
             excess_days = sorted(set(excess_days))
+            del days   # all_days is the authoritative list from here
+            del gaps   # gap index only needed during build above
+            del wiener_extra_days  # only needed during gap-padding build above
 
             if params.cc.keep_all:
                 # Use lazy dask-backed loading when Wiener filter is off —
@@ -205,6 +208,7 @@ def main(stype, loglevel="INFO"):
                     logger.warning("No data found for %s-%s" % (sta1, sta2))
                     continue
                 dr = c.resample(times="%is" % params.cc.corr_duration).mean()
+                c.close()
                 del c  # free raw CCF data — dr is all we need from here
 
             else:
@@ -213,6 +217,7 @@ def main(stype, loglevel="INFO"):
                 c = xr_load_ccf_for_stack(params.global_.output_folder, lineage_names,
                                           sta1, sta2, components, all_days)
                 dr = c.resample(times="1D").mean()
+                c.close()
                 del c  # free raw CCF data — dr is all we need from here
 
             if wienerfilt:
@@ -230,6 +235,7 @@ def main(stype, loglevel="INFO"):
                 logger.warning(f"{sta1}:{sta2}-{components}: {message}")
 
             excess_dates = pd.to_datetime(excess_days).values
+            del excess_days  # numpy excess_dates is all we need from here
             for mov_stack in mov_stacks:
                 # if mov_stack > len(dr.times):
                 #     logger.error("not enough data for mov_stack=%i" % mov_stack)
@@ -263,7 +269,7 @@ def main(stype, loglevel="INFO"):
                 del xx, xx_cleaned
 
             del dr          # free resampled CCF dataset before next component
-            del excess_dates, all_days, excess_days, wiener_extra_days
+            del excess_dates, all_days
 
         massive_update_job(db, jobs, "D")
         if not batch["params"].global_.hpc:

@@ -223,6 +223,7 @@ def main(loglevel="INFO"):
                 freqmax=params.filter.freqmax,
                 tfpws_nscales=params.refstack.tfpws_nscales,
             )
+            del c  # full CCF dataset no longer needed — free before next component
             ref_stack = xr.DataArray(
                 ref_array, dims=["taxis"], coords={"taxis": taxis},
             ).rename("REF")
