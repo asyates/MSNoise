@@ -178,9 +178,20 @@ def build_params_from_project_yaml(
     :returns: :class:`~msnoise.params.MSNoiseParams` with one layer per
               category in *lineage_names*.
     """
+    import csv as _csv
     import yaml
     from obspy.core.util.attribdict import AttribDict
     from ..params import MSNoiseParams
+
+    _config_dir = Path(__file__).parent.parent / "config"
+
+    def _csv_defaults(category: str) -> dict:
+        """Load default values from config_<category>.csv."""
+        path = _config_dir / f"config_{category}.csv"
+        if not path.exists():
+            return {}
+        with open(path, newline="", encoding="utf-8") as fh:
+            return {row["name"]: row["default"] for row in _csv.DictReader(fh)}
 
     with open(project_yaml_path, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
@@ -192,7 +203,12 @@ def build_params_from_project_yaml(
         step_doc = doc.get(step_name, {})
         config = {k: v for k, v in step_doc.items() if k not in _STEP_META_KEYS}
         category = step_name.rsplit("_", 1)[0]
-        p._add_layer(category, AttribDict(config))
+        # Back-fill keys that were absent from project.yaml (exported with
+        # only_non_defaults=True) so that get_t_axis, get_ccf etc. find
+        # required params like maxlag, cc_sampling_rate, freqmin/freqmax.
+        defaults = _csv_defaults(category)
+        merged = {**defaults, **config}   # yaml values take precedence
+        p._add_layer(category, AttribDict(merged))
 
     return p
 
