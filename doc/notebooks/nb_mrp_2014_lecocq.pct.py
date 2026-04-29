@@ -193,7 +193,7 @@ print("mwcs_dtt_dvv results:", dvv_results)
 
 # %%
 d = dvv_results[0]
-dvv_all = d.get_dvv(pair_type="CC", components="ZZ")   # dict {(pair_type, comp, mov_stack): Dataset}
+dvv_all = d.get_dvv(pair_type="CC", components="ZZ")   # {(pair_type, mov_stack): Dataset}
 print("Available keys:", list(dvv_all.keys()))
 
 # %%
@@ -201,23 +201,25 @@ fig, axes = plt.subplots(2, 1, figsize=(13, 8), sharex=True)
 ax_dvv, ax_coh = axes
 
 CMAP = plt.cm.viridis
-keys = sorted(dvv_all.keys(), key=lambda k: k[1][0])   # sort by mov_stack duration
+keys = sorted(dvv_all.keys(), key=lambda k: k[-1][0])   # last element is mov_stack tuple
 colors = CMAP(np.linspace(0.15, 0.85, len(keys)))
 
-for (pt, comp, ms), ds, color in zip(keys, [dvv_all[k] for k in keys], colors):
+for key, ds, color in zip(keys, [dvv_all[k] for k in keys], colors):
+    ms = key[-1]   # mov_stack tuple is always the last element
     label = f"{ms[0]}/{ms[1]}"
     times = ds["times"].values.astype("M8[ms]").astype(object)
 
     dvv  = ds["dvv"].values * 100      # → %
     err  = ds["err"].values * 100
-    coh  = ds.get("coh", ds.get("m", None))
 
     ax_dvv.plot(times, dvv, color=color, lw=1.2, label=label)
     ax_dvv.fill_between(times, dvv - err, dvv + err,
                         color=color, alpha=0.15)
 
-    if coh is not None:
-        ax_coh.plot(times, coh.values, color=color, lw=1.0)
+    for coh_var in ("coh", "m", "coherence"):
+        if coh_var in ds:
+            ax_coh.plot(times, ds[coh_var].values, color=color, lw=1.0)
+            break
 
 ax_dvv.axhline(0, color="k", lw=0.6, ls="--", alpha=0.4)
 ax_dvv.set_ylabel("dv/v (%)")
