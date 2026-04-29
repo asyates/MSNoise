@@ -498,6 +498,105 @@ def reconstruct_jobs_from_filesystem(session, schema, level: str, root: str | Pa
     return total_inserted
 
 
+def _level_has_content(project_dir: Path, level: str) -> bool:
+    """Return True if *level* has at least one non-empty ``_output/`` directory."""
+    output_dir_patterns = [
+        p.rstrip("/**").rstrip("/") for p in LEVEL_GLOBS[level]
+    ]
+    for pattern in output_dir_patterns:
+        for candidate in project_dir.glob(pattern):
+            if candidate.is_dir() and candidate.name == "_output":
+                if any(candidate.rglob("*")):
+                    return True
+    return False
+
+
+def export_project_levels(
+    project_dir: str | Path,
+    levels: "str | list[str]",
+    output_dir: str | Path,
+    url_base: str = "",
+) -> dict:
+    """Export one ``.tar.zst`` archive per entry level and write ``bundle_pointer.yaml``.
+
+    Levels with no matching ``_output/`` content are skipped silently.
+
+    :param project_dir:  MSNoise project root.
+    :param levels:       Level(s) to export: a single level name, a list, or
+                         ``"all"`` to attempt every level in :data:`LEVEL_GLOBS`.
+    :param output_dir:   Directory where archives and ``bundle_pointer.yaml``
+                         are written (created if absent).
+    :param url_base:     Optional URL prefix for the ``url`` fields in
+                         ``bundle_pointer.yaml``.  If supplied, URLs are formed
+                         as ``<url_base>/<filename>``.  Placeholders are written
+                         when omitted.
+    :returns:            Dict mapping level name → ``{"path": Path, "sha256": str}``
+                         for every exported archive.
+    :raises ValueError:  if *levels* contains an unrecognised level name.
+    """
+    import datetime
+    import yaml
+
+    root = Path(project_dir).resolve()
+    out_dir = Path(output_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if levels == "all":
+        candidates = list(LEVEL_GLOBS)
+    elif isinstance(levels, str):
+        candidates = [levels]
+    else:
+        candidates = list(levels)
+
+    unknown = [lv for lv in candidates if lv not in LEVEL_GLOBS]
+    if unknown:
+        raise ValueError(f"Unknown level(s): {unknown}. Choose from {list(LEVEL_GLOBS)}")
+
+    exported: dict[str, dict] = {}
+    skipped: list[str] = []
+
+    for level in candidates:
+        if not _level_has_content(root, level):
+            skipped.append(level)
+            continue
+        archive_path = out_dir / f"level_{level}.tar.zst"
+        print(f"  Exporting level={level!r} → {archive_path.name} …", flush=True)
+        sha = export_project(root, level, archive_path)
+        exported[level] = {"path": archive_path, "sha256": sha}
+        print(f"    SHA-256: {sha}")
+
+    if skipped:
+        print(f"  Skipped (no content): {skipped}")
+
+    # Write bundle_pointer.yaml
+    pointer: dict = {
+        "msnoise_version_min": "2.0.0",
+        "created_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"),
+        "levels": {},
+    }
+    for level, info in exported.items():
+        fname = info["path"].name
+        if url_base:
+            url = url_base.rstrip("/") + "/" + fname
+        else:
+            url = f"FIXME_UPLOAD_AND_SET_URL/{fname}"
+        pointer["levels"][level] = {
+            "description": f"FIXME: describe {level} outputs",
+            "url": url,
+            "sha256": info["sha256"],
+            "size_gb": round(info["path"].stat().st_size / 1e9, 3),
+        }
+
+    pointer_path = out_dir / "bundle_pointer.yaml"
+    with open(pointer_path, "w", encoding="utf-8") as fh:
+        yaml.dump(pointer, fh, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    print(f"\nWrote {pointer_path}")
+    if not url_base:
+        print("  ⚠  URLs are placeholders — set them after uploading the archives.")
+
+    return exported
+
+
 def import_project_archive(
     pointer_path: str | Path,
     level: "str | list[str]",

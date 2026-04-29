@@ -3033,18 +3033,31 @@ def project():
 @project.command(name="export")
 @click.option(
     "--level",
-    required=True,
-    type=click.Choice(
-        ["preprocess", "cc", "stack", "mwcs", "stretching", "wavelet", "dvv"],
-        case_sensitive=True,
-    ),
-    help="Entry level to bundle (which pipeline outputs to include).",
+    "levels",
+    multiple=True,
+    metavar="LEVEL",
+    help="Level(s) to export.  Repeat for multiple (e.g. --level stack --level dvv).  "
+         "Pass 'all' to export every level that has content on disk.",
 )
 @click.option(
     "--output", "-o",
-    required=True,
+    default=None,
     metavar="PATH",
-    help="Destination .tar.zst file.",
+    help="Destination .tar.zst file (single level only).",
+)
+@click.option(
+    "--output-dir",
+    default=None,
+    metavar="DIR",
+    help="Destination directory for multi-level export.  One .tar.zst per level "
+         "plus bundle_pointer.yaml are written here.",
+)
+@click.option(
+    "--url-base",
+    default="",
+    metavar="URL",
+    help="URL prefix for bundle_pointer.yaml (e.g. https://ftp.example.org/msnoise/study).  "
+         "Placeholder strings are written when omitted.",
 )
 @click.option(
     "--project-dir",
@@ -3053,23 +3066,52 @@ def project():
     metavar="DIR",
     help="MSNoise project root (default: current directory).",
 )
-def project_export(level, output, project_dir):
-    """Export a project archive at the given entry level.
+def project_export(levels, output, output_dir, url_base, project_dir):
+    """Export project archive(s) at one or more entry levels.
 
-    Collects all _output/ trees for the requested level, writes a params.yaml
-    alongside each step directory, and streams everything into a .tar.zst
-    archive.  Prints the archive SHA-256 for pasting into bundle_pointer.yaml.
+    Single level — writes one .tar.zst and prints its SHA-256::
 
-    Example::
+        msnoise project export --level stack -o /data/level_stack.tar.zst
 
-        msnoise project export --level stack --output /tmp/level_stack.tar.zst
+    Multiple levels — writes one archive per level plus bundle_pointer.yaml::
+
+        msnoise project export --level stack --level dvv \\
+            --output-dir /data/bundles/
+
+    All levels with content on disk::
+
+        msnoise project export --level all --output-dir /data/bundles/ \\
+            --url-base https://ftp.seismology.be/msnoise/study
     """
-    from ..core.project_io import export_project
+    from ..core.project_io import export_project, export_project_levels
 
-    click.echo(f"Exporting level={level!r} from {project_dir!r} → {output!r}")
-    sha = export_project(project_dir, level, output)
-    click.echo(f"Done.  Archive SHA-256: {sha}")
-    click.echo(f"Paste into bundle_pointer.yaml:\n  sha256: \"{sha}\"")
+    if not levels:
+        raise click.UsageError("Provide at least one --level (or --level all).")
+
+    # Single-level shorthand: --level X -o file.tar.zst
+    if list(levels) != ["all"] and len(levels) == 1 and output and not output_dir:
+        level = levels[0]
+        click.echo(f"Exporting level={level!r} from {project_dir!r} → {output!r}")
+        sha = export_project(project_dir, level, output)
+        click.echo(f"Done.  SHA-256: {sha}")
+        click.echo(f"Paste into bundle_pointer.yaml:\n  sha256: \"{sha}\"")
+        return
+
+    # Multi-level path — requires --output-dir
+    if not output_dir:
+        raise click.UsageError(
+            "Multi-level export requires --output-dir.  "
+            "Use -o FILE only for a single --level."
+        )
+
+    level_arg = "all" if list(levels) == ["all"] else list(levels)
+    click.echo(f"Exporting level(s)={level_arg!r} → {output_dir!r}")
+    exported = export_project_levels(project_dir, level_arg, output_dir, url_base=url_base)
+    if not exported:
+        click.echo("No levels had content to export.")
+    else:
+        click.echo(f"\nExported {len(exported)} archive(s): {list(exported)}")
+        click.echo("Review and update the URLs in bundle_pointer.yaml before publishing.")
 
 
 @project.command(name="import")
