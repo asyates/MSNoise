@@ -3018,6 +3018,60 @@ def utils_download(ctx, sds_path, startdate, enddate):
                   sds_root=Path(sds_path) if sds_path else None,
                   startdate_override=startdate,
                   enddate_override=enddate)
+
+
+# ---------------------------------------------------------------------------
+# msnoise project  — project archive commands (no DB required)
+# ---------------------------------------------------------------------------
+
+@cli.group(cls=OrderedGroup)
+def project():
+    """Commands for exporting and importing MSNoise project archives."""
+    pass
+
+
+@project.command(name="export")
+@click.option(
+    "--level",
+    required=True,
+    type=click.Choice(
+        ["preprocess", "cc", "stack", "mwcs", "stretching", "wavelet", "dvv"],
+        case_sensitive=True,
+    ),
+    help="Entry level to bundle (which pipeline outputs to include).",
+)
+@click.option(
+    "--output", "-o",
+    required=True,
+    metavar="PATH",
+    help="Destination .tar.zst file.",
+)
+@click.option(
+    "--project-dir",
+    default=".",
+    show_default=True,
+    metavar="DIR",
+    help="MSNoise project root (default: current directory).",
+)
+def project_export(level, output, project_dir):
+    """Export a project archive at the given entry level.
+
+    Collects all _output/ trees for the requested level, writes a params.yaml
+    alongside each step directory, and streams everything into a .tar.zst
+    archive.  Prints the archive SHA-256 for pasting into bundle_pointer.yaml.
+
+    Example::
+
+        msnoise project export --level stack --output /tmp/level_stack.tar.zst
+    """
+    from ..core.project_io import export_project
+
+    click.echo(f"Exporting level={level!r} from {project_dir!r} → {output!r}")
+    sha = export_project(project_dir, level, output)
+    click.echo(f"Done.  Archive SHA-256: {sha}")
+    click.echo(f"Paste into bundle_pointer.yaml:\n  sha256: \"{sha}\"")
+
+
 def run():
     try:
         cli(obj={})

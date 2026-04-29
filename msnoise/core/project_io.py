@@ -140,3 +140,149 @@ def build_params_from_project_yaml(
         p._add_layer(category, AttribDict(config))
 
     return p
+
+
+# ---------------------------------------------------------------------------
+# Project archive export
+# ---------------------------------------------------------------------------
+
+#: Glob patterns (relative to project root) for each entry level.
+#: Each pattern addresses the ``_output/`` directory of the relevant steps.
+LEVEL_GLOBS: dict[str, list[str]] = {
+    "preprocess": ["preprocess_*/_output/**"],
+    "cc":         ["preprocess_*/cc_*/_output/**"],
+    "stack":      ["**/filter_*/stack_*/_output/**",
+                   "**/filter_*/refstack_*/_output/**"],
+    "mwcs":       ["**/mwcs_*/_output/**", "**/mwcs_dtt_*/_output/**"],
+    "stretching": ["**/stretching_*/_output/**"],
+    "wavelet":    ["**/wct_*/_output/**", "**/wct_dtt_*/_output/**"],
+    "dvv":        ["**/*_dvv/_output/**"],
+}
+
+
+def export_project(
+    project_dir: str | Path,
+    level: str,
+    output_path: str | Path,
+) -> str:
+    """Export a project archive (``.tar.zst``) for the given entry *level*.
+
+    Collects all ``_output/`` trees matching *level* (see :data:`LEVEL_GLOBS`),
+    generates a ``params.yaml`` alongside each matched step directory, writes
+    ``meta.yaml`` and ``MANIFEST.json``, and streams everything into a
+    ``.tar.zst`` file.
+
+    :param project_dir:  MSNoise project root (contains ``project.yaml``).
+    :param level:        Entry level — one of the keys in :data:`LEVEL_GLOBS`.
+    :param output_path:  Destination ``.tar.zst`` file path (created/overwritten).
+    :returns:            Hex SHA-256 of the written archive (paste into
+                         ``bundle_pointer.yaml``).
+    :raises ValueError:  if *level* is not a recognised entry level.
+    :raises FileNotFoundError: if ``project.yaml`` is absent from *project_dir*.
+    """
+    import datetime
+    import io
+    import json
+    import tarfile
+    import zstandard as zstd
+    import yaml
+    from obspy.core.util.attribdict import AttribDict
+
+    if level not in LEVEL_GLOBS:
+        raise ValueError(
+            f"Unknown level {level!r}. Choose from: {list(LEVEL_GLOBS)}"
+        )
+
+    root = Path(project_dir).resolve()
+    yaml_path = root / "project.yaml"
+    if not yaml_path.exists():
+        raise FileNotFoundError(f"project.yaml not found in {root}")
+
+    output_path = Path(output_path).resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── collect matching _output dirs then gather files inside ───────────
+    # The trailing /** glob only matches subdirs in Python ≥3.12, not files.
+    # Strategy: find _output dirs via the level patterns (without trailing /**),
+    # then rglob("*") inside each to collect actual files.
+    output_dir_patterns = [p.rstrip("/**").rstrip("/") for p in LEVEL_GLOBS[level]]
+
+    output_dirs: list[Path] = []
+    for pattern in output_dir_patterns:
+        for candidate in root.glob(pattern):
+            if candidate.is_dir() and candidate.name == "_output":
+                output_dirs.append(candidate)
+
+    matched_files: list[Path] = []
+    for odir in output_dirs:
+        for f in odir.rglob("*"):
+            if f.is_file():
+                matched_files.append(f)
+    matched_files = sorted(set(matched_files))
+
+    # ── find unique step dirs and generate params.yaml per lineage ────────
+    # Step dir = parent of _output dir.
+    step_dirs: set[Path] = {odir.parent for odir in output_dirs}
+
+    params_files: list[Path] = []
+    for step_dir in sorted(step_dirs):
+        params_path = step_dir / "params.yaml"
+        lineage_names = list(step_dir.relative_to(root).parts)
+        params = build_params_from_project_yaml(yaml_path, lineage_names)
+        # output_folder will be re-anchored by project.list() at import time.
+        layers = object.__getattribute__(params, "_layers")
+        if "global" in layers:
+            gd = dict(layers["global"])
+            gd["output_folder"] = str(root)
+            layers["global"] = AttribDict(gd)
+        params.to_yaml(str(params_path))
+        params_files.append(params_path)
+
+    # ── files to archive: _output contents + params.yaml + project.yaml ──
+    archive_files: list[Path] = (
+        matched_files + params_files + [yaml_path]
+    )
+    archive_files = sorted(set(archive_files))
+
+    # ── build MANIFEST and meta ───────────────────────────────────────────
+    from .._version import version as msnoise_version  # type: ignore
+
+    manifest: dict[str, dict] = {}
+    for f in archive_files:
+        rel = str(f.relative_to(root))
+        sha = file_sha256(f)
+        manifest[rel] = {"sha256": sha, "size_bytes": f.stat().st_size}
+
+    meta = {
+        "entry_level": level,
+        "msnoise_version": msnoise_version,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "project_name": root.name,
+    }
+
+    # ── stream to .tar.zst ────────────────────────────────────────────────
+    archive_sha = hashlib.sha256()
+
+    with open(output_path, "wb") as out_fh:
+        cctx = zstd.ZstdCompressor(level=9)
+        with cctx.stream_writer(out_fh, closefd=False) as compressor:
+            with tarfile.open(fileobj=compressor, mode="w|") as tf:
+
+                def _add_bytes(name: str, data: bytes) -> None:
+                    buf = io.BytesIO(data)
+                    ti = tarfile.TarInfo(name=name)
+                    ti.size = len(data)
+                    tf.addfile(ti, buf)
+
+                _add_bytes("meta.yaml", yaml.dump(meta, default_flow_style=False).encode())
+                _add_bytes("MANIFEST.json", json.dumps(manifest, indent=2).encode())
+
+                for f in archive_files:
+                    rel = str(f.relative_to(root))
+                    tf.add(str(f), arcname=rel)
+
+    # sha256 of the archive file itself
+    archive_sha = file_sha256(output_path)
+    return archive_sha
