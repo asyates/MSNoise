@@ -193,7 +193,7 @@ print("mwcs_dtt_dvv results:", dvv_results)
 
 # %%
 d = dvv_results[0]
-dvv_all = d.get_dvv(components="ZZ")   # dict {(pair_type, comp, mov_stack): Dataset}
+dvv_all = d.get_dvv(pair_type="CC", components="ZZ")   # dict {(pair_type, comp, mov_stack): Dataset}
 print("Available keys:", list(dvv_all.keys()))
 
 # %%
@@ -201,7 +201,7 @@ fig, axes = plt.subplots(2, 1, figsize=(13, 8), sharex=True)
 ax_dvv, ax_coh = axes
 
 CMAP = plt.cm.viridis
-keys = sorted(dvv_all.keys(), key=lambda k: k[2][0])   # sort by mov_stack duration
+keys = sorted(dvv_all.keys(), key=lambda k: k[1][0])   # sort by mov_stack duration
 colors = CMAP(np.linspace(0.15, 0.85, len(keys)))
 
 for (pt, comp, ms), ds, color in zip(keys, [dvv_all[k] for k in keys], colors):
