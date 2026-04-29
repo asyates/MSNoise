@@ -208,10 +208,17 @@ LEVEL_GLOBS: dict[str, list[str]] = {
     "cc":         ["preprocess_*/cc_*/_output/**"],
     "stack":      ["**/filter_*/stack_*/_output/**",
                    "**/filter_*/refstack_*/_output/**"],
-    "mwcs":       ["**/mwcs_*/_output/**", "**/mwcs_dtt_*/_output/**"],
-    "stretching": ["**/stretching_*/_output/**"],
-    "wavelet":    ["**/wavelet_*/_output/**"],
-    "dvv":        ["**/*_dvv/_output/**"],
+    # mwcs_* would also match mwcs_dtt_* and mwcs_dtt_dvv_* — use digit suffix
+    # to match only the step directories (always named <category>_N).
+    "mwcs":       ["**/mwcs_[0-9]*/_output/**",
+                   "**/mwcs_dtt_[0-9]*/_output/**"],
+    "stretching": ["**/stretching_[0-9]*/_output/**"],
+    "wavelet":    ["**/wavelet_[0-9]*/_output/**",
+                   "**/wavelet_dtt_[0-9]*/_output/**"],
+    # DVV step dirs end with _dvv_N (e.g. mwcs_dtt_dvv_1) — "*_dvv" misses them.
+    "dvv":        ["**/mwcs_dtt_dvv_[0-9]*/_output/**",
+                   "**/stretching_dvv_[0-9]*/_output/**",
+                   "**/wavelet_dtt_dvv_[0-9]*/_output/**"],
 }
 
 #: Categories whose outputs are present in each entry level.
