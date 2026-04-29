@@ -1225,6 +1225,7 @@ def main(init=False, nocc=False, after=False):
             cc_jobs, _ = create_cc_jobs_from_preprocess(session=db)
             created = 0
             if cc_jobs:
+                Job = _Job
                 now = datetime.datetime.now(datetime.timezone.utc)
 
                 # Resolve all unique lineage strings → IDs in one batch,
