@@ -131,3 +131,126 @@ class MSNoiseProject:
         Call :meth:`init_db` first, or use :meth:`from_current` which
         connects automatically.
         """
+        if self._db is None:
+            raise RuntimeError(
+                "No database connection.  Call init_db() first, or load the "
+                "project with from_current() which connects automatically."
+            )
+        return self._db
+
+    # ------------------------------------------------------------------ #
+    # DB initialisation                                                   #
+    # ------------------------------------------------------------------ #
+
+    def init_db(self, with_jobs: bool = False) -> None:
+        """Initialise the project database from ``project.yaml``.
+
+        Runs ``msnoise db init --from-yaml project.yaml`` in
+        :attr:`project_dir`, then connects to the created database.
+
+        :param with_jobs: If ``True``, also reconstruct ``flag=D`` jobs by
+                          scanning the extracted ``_output/`` tree.  Only
+                          needed when continuing the pipeline after importing
+                          a project archive.
+        :raises NotImplementedError: ``with_jobs=True`` is reserved for P4.
+        """
+        import subprocess
+        from .core.db import connect
+
+        yaml_path = os.path.join(self.project_dir, "project.yaml")
+        if not os.path.isfile(yaml_path):
+            raise FileNotFoundError(
+                f"project.yaml not found in {self.project_dir}"
+            )
+
+        subprocess.run(
+            ["msnoise", "db", "init", "--from-yaml", yaml_path],
+            cwd=self.project_dir,
+            check=True,
+        )
+
+        inifile = os.path.join(self.project_dir, "db.ini")
+        self._db = connect(inifile=inifile)
+
+        if with_jobs:
+            raise NotImplementedError("with_jobs=True is implemented in P4")
+
+    # ------------------------------------------------------------------ #
+    # Result access                                                       #
+    # ------------------------------------------------------------------ #
+
+    def list(self, category: str) -> list:
+        """Return all computed :class:`~msnoise.results.MSNoiseResult` objects
+        for *category*.
+
+        Always filesystem-based — no database required.  Scans
+        :attr:`project_dir` for ``<category>_N`` directories that contain an
+        ``_output/`` subdirectory.  A ``params.yaml`` is written alongside
+        ``_output/`` on first access (Option A) and reused on subsequent calls.
+
+        The returned objects share the same interface as those obtained via
+        :meth:`~msnoise.results.MSNoiseResult.from_bundle` — all ``get_*``
+        methods work immediately.  :meth:`~msnoise.results.MSNoiseResult.branches`
+        uses a folder scan and is fully functional.
+
+        :param category: Category name without set number, e.g. ``"stack"``.
+        :returns: List of :class:`~msnoise.results.MSNoiseResult` (``_db=None``),
+                  sorted by lineage path.
+        :raises FileNotFoundError: if ``project.yaml`` is absent from
+                                   :attr:`project_dir`.
+        """
+        from .core.project_io import scan_lineages, build_params_from_project_yaml
+        from .results import MSNoiseResult, _step_prefix
+        from obspy.core.util.attribdict import AttribDict
+
+        project_dir = Path(self.project_dir)
+        yaml_path = project_dir / "project.yaml"
+        if not yaml_path.exists():
+            raise FileNotFoundError(
+                f"project.yaml not found in {self.project_dir}. "
+                "Use from_current() for a live project without project.yaml."
+            )
+
+        matches = scan_lineages(project_dir, category)
+        results = []
+
+        for lineage_names, step_dir in matches:
+            params_path = step_dir / "params.yaml"
+
+            if not params_path.exists():
+                params = build_params_from_project_yaml(yaml_path, lineage_names)
+                # Embed project root as output_folder so _branches_from_folders
+                # resolves child paths correctly via lineage_names.
+                layers = object.__getattribute__(params, "_layers")
+                if "global" in layers:
+                    global_dict = dict(layers["global"])
+                    global_dict["output_folder"] = str(project_dir)
+                    layers["global"] = AttribDict(global_dict)
+                params.to_yaml(str(params_path))
+            else:
+                from .params import MSNoiseParams
+                params = MSNoiseParams.from_yaml(str(params_path))
+                # Re-anchor output_folder to the live project_dir (path may
+                # have moved since params.yaml was written).
+                layers = object.__getattribute__(params, "_layers")
+                if "global" in layers:
+                    global_dict = dict(layers["global"])
+                    global_dict["output_folder"] = str(project_dir)
+                    layers["global"] = AttribDict(global_dict)
+
+            # Construct MSNoiseResult directly — bypass from_bundle's
+            # unconditional output_folder override.
+            inst = MSNoiseResult.__new__(MSNoiseResult)
+            inst._db = None
+            inst._bundle_root = str(step_dir)
+            inst._tmpdir = None
+            inst.lineage_names = list(lineage_names)
+            inst.params = params
+            inst.output_folder = str(project_dir)
+            inst.category = _step_prefix(lineage_names[-1])
+            inst._present_categories = frozenset(
+                _step_prefix(n) for n in lineage_names
+            )
+            results.append(inst)
+
+        return results
