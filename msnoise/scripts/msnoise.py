@@ -337,47 +337,64 @@ def db_init(tech, auto_workflow, from_yaml, yes):
         click.echo('Setup complete!' if not warnings
                    else 'Setup complete (with warnings — check links in admin UI).')
 
-        # Offer to create preprocess jobs when datasource is remote and the
-        # date range has been explicitly set (non-default values).
         _DEFAULT_START, _DEFAULT_END = "1970-01-01", "2100-01-01"
         startdate = get_config(db, "startdate")
         enddate   = get_config(db, "enddate")
         all_ds = db.query(DataSource).all()
         remote_ds = [d for d in all_ds if is_remote_source(d.uri or "")]
-        if remote_ds and startdate != _DEFAULT_START and enddate != _DEFAULT_END:
+        if remote_ds:
             ds_names = ", ".join(d.name for d in remote_ds)
             click.echo(f"\nDataSource(s) '{ds_names}' use remote FDSN/EIDA.")
-            if yes or click.confirm(
-                f"Create preprocess jobs for {startdate} → {enddate}?",
-                default=True,
-            ):
-                pre_steps = [s for s in get_workflow_steps(db)
-                             if s.category == "preprocess"]
-                if not pre_steps:
-                    click.echo("  No preprocess step found — skipping job creation.", err=True)
-                else:
-                    pre_step = pre_steps[0]
-                    start = datetime.date.fromisoformat(startdate)
-                    end   = datetime.date.fromisoformat(enddate)
-                    dates, cur = [], start
-                    while cur <= end:
-                        dates.append(cur.isoformat())
-                        cur += datetime.timedelta(days=1)
-                    n = 0
-                    for day in dates:
-                        for sta in get_stations(db, all=False):
-                            for loc in (sta.locs() or [""]):
-                                pair = f"{sta.net}.{sta.sta}.{loc}"
-                                update_job(db, day, pair, pre_step.step_name, "T",
-                                           step_id=pre_step.step_id,
-                                           lineage=pre_step.step_name,
-                                           commit=False)
-                                n += 1
-                        db.commit()
-                    click.echo(f"  Created {n} preprocess job(s) over {len(dates)} day(s).")
+            if startdate == _DEFAULT_START or enddate == _DEFAULT_END:
+                click.echo(
+                    "  ⚠  startdate/enddate are still at default values "
+                    f"({startdate} → {enddate}).\n"
+                    "  Set them in your project.yaml or via `msnoise config set` "
+                    "before downloading or creating jobs.",
+                    err=True,
+                )
             else:
-                click.echo(f"  Run later:  msnoise utils create_preprocess_jobs"
-                           f" --date_range {startdate} {enddate}")
+                click.echo("  How would you like to proceed?")
+                click.echo("  [1] Bulk download first  — fetch all raw waveforms into SDS, then run pipeline")
+                click.echo("  [2] Stream from FDSN     — preprocess fetches on-the-fly (creates jobs now)")
+                click.echo("  [3] Skip                 — I'll handle it manually")
+                choice = click.prompt("Choice", type=click.Choice(["1", "2", "3"]),
+                                      default="1", show_default=True)
+
+                if choice == "1":
+                    click.echo("\n  Next steps:")
+                    click.echo(f"    msnoise utils download          # fetch raw waveforms into SDS")
+                    click.echo(f"    msnoise scan_archive            # populate data availability")
+                    click.echo(f"    msnoise utils run_workflow      # run full pipeline")
+
+                elif choice == "2":
+                    pre_steps = [s for s in get_workflow_steps(db)
+                                 if s.category == "preprocess"]
+                    if not pre_steps:
+                        click.echo("  No preprocess step found — skipping job creation.", err=True)
+                    else:
+                        pre_step = pre_steps[0]
+                        start = datetime.date.fromisoformat(startdate)
+                        end   = datetime.date.fromisoformat(enddate)
+                        dates, cur = [], start
+                        while cur <= end:
+                            dates.append(cur.isoformat())
+                            cur += datetime.timedelta(days=1)
+                        n = 0
+                        for day in dates:
+                            for sta in get_stations(db, all=False):
+                                for loc in (sta.locs() or [""]):
+                                    pair = f"{sta.net}.{sta.sta}.{loc}"
+                                    update_job(db, day, pair, pre_step.step_name, "T",
+                                               step_id=pre_step.step_id,
+                                               lineage=pre_step.step_name,
+                                               commit=False)
+                                    n += 1
+                            db.commit()
+                        click.echo(f"  Created {n} preprocess job(s) over {len(dates)} day(s).")
+                        click.echo(f"\n  Next step:")
+                        click.echo(f"    msnoise utils run_workflow")
+
         db.close()
         return
 
