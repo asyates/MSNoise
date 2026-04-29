@@ -1222,15 +1222,47 @@ def main(init=False, nocc=False, after=False):
         # propagate_first_runnable_from_category can't handle that (it assumes pair format
         # is preserved), so we use the dedicated function instead.
         if source_category == "preprocess":
-            cc_jobs, created = create_cc_jobs_from_preprocess(session=db)
+            cc_jobs, _ = create_cc_jobs_from_preprocess(session=db)
+            created = 0
             if cc_jobs:
-                for job in cc_jobs:
-                    update_job(db, job['day'], job['pair'],
-                                        job['jobtype'], job['flag'],
-                                        step_id=job.get('step_id'),
-                                        priority=job.get('priority', 0),
-                                        lineage=job.get('lineage'),
-                                        commit=False)
+                now = datetime.datetime.now(datetime.timezone.utc)
+
+                # Resolve all unique lineage strings → IDs in one batch,
+                # then filter against existing jobs (handles re-runs).
+                unique_lineages = {j['lineage'] for j in cc_jobs}
+                lineage_id_map  = {
+                    ls: _get_or_create_lineage_id(db, ls)
+                    for ls in unique_lineages
+                }
+
+                # Build desired key set for dedup check
+                cc_step_ids = list({j['step_id'] for j in cc_jobs})
+                desired_days = list({j['day'] for j in cc_jobs})
+                existing = {
+                    (r.step_id, r.day, r.pair, r.lineage_id)
+                    for r in db.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
+                    .filter(Job.step_id.in_(cc_step_ids))
+                    .filter(Job.day.in_(desired_days))
+                    .all()
+                }
+
+                to_insert = []
+                for j in cc_jobs:
+                    lid = lineage_id_map[j['lineage']]
+                    key = (j['step_id'], j['day'], j['pair'], lid)
+                    if key not in existing:
+                        to_insert.append({
+                            'day':        j['day'],
+                            'pair':       j['pair'],
+                            'jobtype':    j['jobtype'],
+                            'step_id':    j['step_id'],
+                            'priority':   j.get('priority', 0),
+                            'flag':       'T',
+                            'lastmod':    now,
+                            'lineage_id': lid,
+                        })
+
+                created, _ = bulk_upsert_jobs(db, to_insert, [], now)
                 db.commit()
             logger.info(f'Propagation from category "preprocess" created {created} CC job(s)')
             return
