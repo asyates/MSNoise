@@ -93,8 +93,11 @@ def _trim(data, dttname, limits=0.1):
 def _xr_create_or_open(fn, taxis=[], name="CCF", lazy=False):
     """Open an existing NetCDF file or create an empty template Dataset.
 
-    For **write** paths (``lazy=False``): loads the full file into memory so
-    the handle is released before ``_xr_save_and_close`` rewrites it.
+    For **write** paths (``lazy=False``): loads the full file into memory and
+    explicitly closes the file handle so xarray's ``CachingFileManager`` LRU
+    cache does not retain an open read descriptor.  On GPFS an open read
+    handle blocks the subsequent ``_xr_save_and_close`` write token, causing
+    a spurious ``PermissionError`` even on files owned by the same process.
 
     For **read** paths (``lazy=True``): returns a lazily memory-mapped Dataset.
 
@@ -107,7 +110,13 @@ def _xr_create_or_open(fn, taxis=[], name="CCF", lazy=False):
         try:
             if lazy:
                 return xr.open_dataset(fn)
-            return xr.load_dataset(fn)
+            # Use a context manager so xarray closes the file handle
+            # (including any LRU-cached descriptor) before we return the
+            # in-memory dataset.  Without explicit close, the CachingFileManager
+            # keeps the handle open; on GPFS that blocks the write token needed
+            # by _xr_save_and_close, causing PermissionError on the same node.
+            with xr.open_dataset(fn) as ds:
+                return ds.load()
         except (ValueError, OverflowError, OSError) as e:
             # File exists but is corrupt or has time values outside the range
             # supported by the current xarray/pandas version (e.g. INT64_MIN
@@ -193,9 +202,23 @@ def _xr_insert_or_update(dataset, new):
 
 def _xr_save_and_close(dataset, fn, encoding=None):
     """Write *dataset* to *fn* with float32+zlib encoding by default."""
-    os.makedirs(os.path.dirname(fn), exist_ok=True)
+    import time
+    dirpath = os.path.dirname(fn)
+    dir_existed = os.path.isdir(dirpath)
+    os.makedirs(dirpath, exist_ok=True)
     enc = encoding if encoding is not None else _f32_encoding(dataset)
-    dataset.to_netcdf(fn, mode="w", encoding=enc, engine="netcdf4")
+    # On GPFS a freshly created directory inode may not have propagated its
+    # write token to the creating client yet.  Retry briefly on PermissionError
+    # when we just created the directory; the token is typically available
+    # within a second.
+    for _attempt in range(6):
+        try:
+            dataset.to_netcdf(fn, mode="w", encoding=enc, engine="netcdf4")
+            break
+        except PermissionError:
+            if _attempt == 5 or dir_existed:
+                raise
+            time.sleep(0.5 * (1 + _attempt))
     dataset.close()
     del dataset
 
