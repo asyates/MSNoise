@@ -2957,6 +2957,48 @@ def utils_run_workflow(ctx, threads, hpc, from_category, until_category,
         ctx.exit(1)
 
 
+@utils.command(name="download")
+@click.option("--sds-path", "sds_path", default=None,
+              type=click.Path(file_okay=False, writable=True, path_type=Path),
+              metavar="PATH",
+              help="SDS archive root to write into.  Auto-detected from the "
+                   "DataSource table when unambiguous; falls back to ./SDS.")
+@click.option("--startdate", default=None, metavar="YYYY-MM-DD",
+              help="Override project startdate.")
+@click.option("--enddate", default=None, metavar="YYYY-MM-DD",
+              help="Override project enddate.")
+@click.pass_context
+def utils_download(ctx, sds_path, startdate, enddate):
+    """Download waveforms from FDSN/EIDA sources into an SDS archive.
+
+    Reads remote DataSource entries and the station table from the database,
+    builds an ObsPy Inventory for server-side station gating, and runs
+    ObsPy MassDownloader for the project date range.  Waveforms are written
+    as day-aligned MiniSEED files in SDS layout.
+
+    The SDS write root is resolved in order:
+    --sds-path → single unambiguous local SDS DataSource → ./SDS (warning).
+
+    StationXML is stored alongside and never overwritten.  Traces are never
+    discarded for missing instrument response.
+
+    Example::
+
+        msnoise utils download
+        msnoise utils download --sds-path /data/SDS
+        msnoise utils download --startdate 2013-06-01 --enddate 2013-06-30
+    """
+    from pathlib import Path
+    from ..core.db import connect
+    from ..msnoise_table_def import declare_tables
+    from ..core.fdsn import mass_download
+
+    db      = connect()
+    _schema = declare_tables()
+    mass_download(db, _schema,
+                  sds_root=sds_path,
+                  startdate_override=startdate,
+                  enddate_override=enddate)
 def run():
     try:
         cli(obj={})
