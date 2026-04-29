@@ -173,7 +173,22 @@ class MSNoiseProject:
         self._db = connect(inifile=inifile)
 
         if with_jobs:
-            raise NotImplementedError("with_jobs=True is implemented in P4")
+            from .core.project_io import reconstruct_jobs_from_filesystem
+            from .msnoise_table_def import declare_tables
+            import yaml as _yaml
+            meta_path = os.path.join(self.project_dir, "meta.yaml")
+            if not os.path.isfile(meta_path):
+                raise FileNotFoundError(
+                    "meta.yaml not found — cannot determine entry level for "
+                    "job reconstruction.  Pass level= explicitly or ensure the "
+                    "project archive is intact."
+                )
+            with open(meta_path, encoding="utf-8") as _fh:
+                meta = _yaml.safe_load(_fh)
+            level = meta["entry_level"]
+            _schema = declare_tables()
+            n = reconstruct_jobs_from_filesystem(self._db, _schema, level=level, root=self.project_dir)
+            print(f"Reconstructed {n} flag=D jobs from filesystem (level={level!r}).")
 
     # ------------------------------------------------------------------ #
     # Result access                                                       #

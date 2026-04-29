@@ -3072,6 +3072,67 @@ def project_export(level, output, project_dir):
     click.echo(f"Paste into bundle_pointer.yaml:\n  sha256: \"{sha}\"")
 
 
+@project.command(name="import")
+@click.option(
+    "--from", "pointer",
+    required=True,
+    metavar="PATH",
+    help="Path to bundle_pointer.yaml.",
+)
+@click.option(
+    "--level",
+    required=True,
+    type=click.Choice(
+        ["preprocess", "cc", "stack", "mwcs", "stretching", "wavelet", "dvv"],
+        case_sensitive=True,
+    ),
+    help="Entry level to download and import.",
+)
+@click.option(
+    "--project-dir",
+    default=".",
+    show_default=True,
+    metavar="DIR",
+    help="Destination directory (created if absent).",
+)
+@click.option(
+    "--with-jobs",
+    is_flag=True,
+    default=False,
+    help="Reconstruct flag=D jobs from the extracted _output/ tree "
+         "so the pipeline can be resumed immediately.",
+)
+def project_import(pointer, level, project_dir, with_jobs):
+    """Download and import a project archive from a bundle_pointer.yaml.
+
+    Downloads the .tar.zst archive for the requested level, verifies its
+    SHA-256, extracts it, initialises the database, and optionally
+    reconstructs flag=D jobs so that 'msnoise new_jobs --after <level>'
+    generates the correct downstream jobs.
+
+    Example::
+
+        msnoise project import --from bundle_pointer.yaml --level stack \\
+            --project-dir ./my_project --with-jobs
+    """
+    from ..core.project_io import import_project_archive
+    from ..project import MSNoiseProject
+
+    root = import_project_archive(pointer, level, project_dir)
+    click.echo(f"Extracted to {root}")
+
+    proj = MSNoiseProject.from_project_dir(root)
+    proj.init_db(with_jobs=with_jobs)
+    click.echo("Database initialised.")
+
+    if with_jobs:
+        chains = level  # already printed inside init_db
+        click.echo(
+            f"\nReady.  Resume the pipeline with:\n"
+            f"  msnoise new_jobs --after {level}"
+        )
+
+
 def run():
     try:
         cli(obj={})

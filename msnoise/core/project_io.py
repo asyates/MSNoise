@@ -155,8 +155,21 @@ LEVEL_GLOBS: dict[str, list[str]] = {
                    "**/filter_*/refstack_*/_output/**"],
     "mwcs":       ["**/mwcs_*/_output/**", "**/mwcs_dtt_*/_output/**"],
     "stretching": ["**/stretching_*/_output/**"],
-    "wavelet":    ["**/wct_*/_output/**", "**/wct_dtt_*/_output/**"],
+    "wavelet":    ["**/wavelet_*/_output/**"],
     "dvv":        ["**/*_dvv/_output/**"],
+}
+
+#: Categories whose outputs are present in each entry level.
+#: Used by :func:`reconstruct_jobs_from_filesystem` to know which steps
+#: to scan when inserting ``flag=D`` jobs.
+LEVEL_CATEGORIES: dict[str, list[str]] = {
+    "preprocess": ["preprocess"],
+    "cc":         ["cc"],
+    "stack":      ["stack", "refstack"],
+    "mwcs":       ["mwcs", "mwcs_dtt"],
+    "stretching": ["stretching"],
+    "wavelet":    ["wavelet", "wavelet_dtt"],
+    "dvv":        ["mwcs_dtt_dvv", "stretching_dvv", "wavelet_dtt_dvv"],
 }
 
 
@@ -286,3 +299,207 @@ def export_project(
     # sha256 of the archive file itself
     archive_sha = file_sha256(output_path)
     return archive_sha
+
+
+# ---------------------------------------------------------------------------
+# Job reconstruction helpers
+# ---------------------------------------------------------------------------
+
+def _pair_from_stem(stem: str) -> str:
+    """Convert a NetCDF filename stem ``STA1_STA2`` to a job pair ``STA1:STA2``.
+
+    SEED station identifiers use dots (e.g. ``BE.UCC..HHZ``) so the single
+    underscore in the stem unambiguously separates the two stations.
+    """
+    return stem.replace("_", ":", 1)
+
+
+def _days_from_nc(path: Path) -> list[str]:
+    """Return unique date strings from the ``times`` coordinate of a NetCDF file.
+
+    :returns: Sorted list of ``YYYY-MM-DD`` strings.
+    """
+    import xarray as xr
+    ds = xr.open_dataset(str(path))
+    try:
+        times = ds["times"].values
+    finally:
+        ds.close()
+    import numpy as np
+    return sorted({str(t)[:10] for t in times})
+
+
+def reconstruct_jobs_from_filesystem(session, schema, level: str, root: str | Path) -> int:
+    """Insert ``flag=D`` jobs by scanning the extracted ``_output/`` tree.
+
+    After ``msnoise db init --from-yaml`` the jobs table is empty.  This
+    function synthetically populates it so that normal ``new_jobs``
+    propagation generates the correct downstream ``flag=T`` jobs.
+
+    :param session: SQLAlchemy session (DB must already be initialised).
+    :param schema:  Return value of :func:`~msnoise.msnoise_table_def.declare_tables`.
+    :param level:   Entry level string (key of :data:`LEVEL_CATEGORIES`).
+    :param root:    Project root directory.
+    :returns:       Total number of ``flag=D`` jobs inserted.
+    :raises ValueError: if *level* is unknown.
+    """
+    import datetime
+    from ..msnoise_table_def import WorkflowStep
+    from ..core.workflow import _get_or_create_lineage_id
+
+    if level not in LEVEL_CATEGORIES:
+        raise ValueError(f"Unknown level {level!r}")
+
+    root = Path(root).resolve()
+    Job = schema.Job
+    now = datetime.datetime.utcnow()
+    total_inserted = 0
+
+    for category in LEVEL_CATEGORIES[level]:
+        matches = scan_lineages(root, category)
+        for lineage_names, step_dir in matches:
+            step_name = lineage_names[-1]
+
+            # Resolve step_id
+            step = (
+                session.query(WorkflowStep)
+                .filter(WorkflowStep.step_name == step_name)
+                .first()
+            )
+            if step is None:
+                import logging
+                logging.getLogger("msnoise.project_io").warning(
+                    f"WorkflowStep {step_name!r} not found in DB — skipping"
+                )
+                continue
+
+            lineage_str = "/".join(lineage_names)
+            lineage_id = _get_or_create_lineage_id(session, lineage_str)
+            session.flush()
+
+            output_dir = step_dir / "_output"
+            job_tuples: list[tuple[str, str]] = []  # (pair, day)
+
+            if category == "refstack":
+                # REF files: _output/REF/<comp>/<STA1>_<STA2>.nc
+                for nc in output_dir.rglob("*.nc"):
+                    pair = _pair_from_stem(nc.stem)
+                    job_tuples.append((pair, "REF"))
+
+            elif category in ("mwcs_dtt_dvv", "stretching_dvv", "wavelet_dtt_dvv"):
+                # DVV pair files: _output/<ms>/dvv_pairs_*.nc — pairs in `pair` dim
+                import xarray as xr
+                for nc in output_dir.rglob("dvv_pairs_*.nc"):
+                    ds = xr.open_dataset(str(nc))
+                    try:
+                        pairs = [str(p) for p in ds["pair"].values]
+                    finally:
+                        ds.close()
+                    for pair in pairs:
+                        job_tuples.append((pair, "DVV"))
+
+            elif category == "cc":
+                # Daily CCFs: _output/daily/<comp>/<STA1>_<STA2>/<YYYY-MM-DD>.nc
+                daily_root = output_dir / "daily"
+                if daily_root.is_dir():
+                    for nc in daily_root.rglob("*.nc"):
+                        pair = _pair_from_stem(nc.parent.name)
+                        day = nc.stem
+                        job_tuples.append((pair, day))
+
+            else:
+                # stack, mwcs, wavelet, wavelet_dtt, mwcs_dtt, stretching:
+                # _output/<ms>/<comp>/<STA1>_<STA2>.nc — days from `times` dim
+                for nc in output_dir.rglob("*.nc"):
+                    pair = _pair_from_stem(nc.stem)
+                    try:
+                        days = _days_from_nc(nc)
+                    except Exception:
+                        days = []
+                    for day in days:
+                        job_tuples.append((pair, day))
+
+            # Deduplicate
+            job_set = list(set(job_tuples))
+
+            mappings = [
+                {
+                    "day":        day,
+                    "pair":       pair,
+                    "flag":       "D",
+                    "jobtype":    step_name,
+                    "step_id":    step.step_id,
+                    "lineage_id": lineage_id,
+                    "priority":   0,
+                    "lastmod":    now,
+                }
+                for pair, day in job_set
+            ]
+            if mappings:
+                session.bulk_insert_mappings(Job, mappings)
+                total_inserted += len(mappings)
+
+    session.commit()
+    return total_inserted
+
+
+def import_project_archive(
+    pointer_path: str | Path,
+    level: str,
+    project_dir: str | Path,
+) -> Path:
+    """Download and extract a project archive from a ``bundle_pointer.yaml``.
+
+    :param pointer_path: Path to ``bundle_pointer.yaml``.
+    :param level:        Entry level to import (must be listed in the pointer).
+    :param project_dir:  Destination directory (created if absent).
+    :returns:            Absolute path to the extracted project root.
+    :raises KeyError:    if *level* is not listed in ``bundle_pointer.yaml``.
+    :raises ValueError:  if the downloaded archive fails the SHA-256 check.
+    """
+    import tempfile
+    import urllib.request
+    import yaml
+
+    pointer_path = Path(pointer_path).resolve()
+    with open(pointer_path, encoding="utf-8") as fh:
+        pointer = yaml.safe_load(fh)
+
+    levels = pointer.get("levels", {})
+    if level not in levels:
+        available = list(levels)
+        raise KeyError(
+            f"Level {level!r} not in bundle_pointer.yaml. "
+            f"Available: {available}"
+        )
+
+    entry = levels[level]
+    url = entry["url"]
+    expected_sha = entry.get("sha256", "")
+
+    # Download with progress
+    import sys
+    print(f"Downloading {url} …", flush=True)
+
+    def _report(block, block_size, total):
+        if total > 0:
+            pct = min(100, block * block_size * 100 // total)
+            print(f"\r  {pct}%", end="", flush=True)
+
+    with tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+
+    urllib.request.urlretrieve(url, str(tmp_path), reporthook=_report)
+    print()  # newline after progress
+
+    # Verify sha256
+    actual_sha = file_sha256(tmp_path)
+    if expected_sha and actual_sha != expected_sha:
+        tmp_path.unlink(missing_ok=True)
+        raise ValueError(
+            f"SHA-256 mismatch: expected {expected_sha!r}, got {actual_sha!r}"
+        )
+
+    root = extract_archive(tmp_path, project_dir)
+    tmp_path.unlink(missing_ok=True)
+    return root
