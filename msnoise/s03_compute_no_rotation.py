@@ -591,6 +591,7 @@ import scipy.signal
 import scipy.fft as sf
 from scipy.fft import next_fast_len
 from obspy.signal.filter import bandpass
+from scipy.signal import iirfilter as _iirfilter, zpk2sos as _zpk2sos, sosfilt as _sosfilt
 
 
 def main(loglevel="INFO", chunk_size=0):
@@ -641,6 +642,20 @@ def main(loglevel="INFO", chunk_size=0):
             filters.append([filter.step_name, get_config_set_details(db, filter.category, filter.set_number, format='AttribDict')])
         # Lookup dict for tfpws: filter_name -> (freqmin, freqmax)
         filter_freq = {name: (float(f.freqmin), float(f.freqmax)) for name, f in filters}
+        # Pre-compute bandpass SOS coefficients once per filter — avoids
+        # repeated iirfilter+zpk2sos design (constant per day) inside the
+        # window loop.  sosfilt(sos, data, axis=1) then vectorises across
+        # all stations in one C-level call instead of N Python calls.
+        _fs = params.cc.cc_sampling_rate
+        _filter_sos = {
+            fn: _zpk2sos(*_iirfilter(
+                8,
+                [2.0 * float(fcfg.freqmin) / _fs,
+                 2.0 * float(fcfg.freqmax) / _fs],
+                btype='band', ftype='butter', output='zpk'
+            ))
+            for fn, fcfg in filters
+        }
         logger.info("New CC Job: %s (%i pairs with %i stations)" %
                      (goal_day, len(pairs), len(stations)))
         jt = time.time()
@@ -732,8 +747,7 @@ def main(loglevel="INFO", chunk_size=0):
             taper = np.hstack(
                 (taper_sides[:wlen], np.ones(data.shape[1] - 2 * wlen),
                  taper_sides[len(taper_sides) - wlen:]))
-            for i in range(data.shape[0]):
-                data[i] *= taper
+            data *= taper   # broadcast: (n_stations, N) * (N,)
             # index net.sta comps for energy later
             channel_index = {}
             if params.cc.whitening != "N" and params.cc.whitening_type == "PSD":
@@ -776,10 +790,12 @@ def main(loglevel="INFO", chunk_size=0):
             tmptime = tmp[0].stats.endtime.datetime
             thistime = tmptime.strftime("%Y-%m-%d %H:%M:%S")
 
-            for filter_name, filter in filters:
-                # logger.debug("Processing filter %s" % filter_name)
-                # print(filter)
+            # freq_vec depends only on nfft/dt — constant across filters.
+            freq_vec = sf.fftfreq(nfft, d=dt)[:nfft // 2]
+            # O(1) station index lookup — replaces O(n_stations) names.index()
+            names_idx = {tuple(n): i for i, n in enumerate(names)}
 
+            for filter_name, filter in filters:
                 # Standard operator for CC
                 cc_index = []
                 if filter.CC:
@@ -796,7 +812,7 @@ def main(loglevel="INFO", chunk_size=0):
                             if comp in params.cc.components_to_compute:
                                 cc_index.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp),
-                                    names.index(sta1), names.index(sta2)])
+                                    names_idx[tuple(sta1)], names_idx[tuple(sta2)]])
 
                 # Different iterator func for single station AC or SC:
                 single_station_pair_index_sc = []
@@ -816,20 +832,20 @@ def main(loglevel="INFO", chunk_size=0):
                             if filter.AC and c1[-1] == c2[-1]:
                                 single_station_pair_index_ac.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp),
-                                    names.index(sta1), names.index(sta2)])
+                                    names_idx[tuple(sta1)], names_idx[tuple(sta2)]])
                             elif filter.SC:
                             # If the components are different, we can just
                             # process them using the default CC code (should warn)
                                 single_station_pair_index_sc.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp),
-                                    names.index(sta1), names.index(sta2)])
+                                    names_idx[tuple(sta1)], names_idx[tuple(sta2)]])
                         if comp[::-1] in params.cc.components_to_compute_single_station:
                             if filter.SC and c1[-1] != c2[-1]:
                                 # If the components are different, we can just
                                 # process them using the default CC code (should warn)
                                 single_station_pair_index_sc.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp[::-1]),
-                                    names.index(sta2), names.index(sta1)])
+                                    names_idx[tuple(sta2)], names_idx[tuple(sta1)]])
 
                 # logger.debug("CC index: %s" % cc_index)
                 # logger.debug("single station AC: ", single_station_pair_index_ac)
@@ -838,7 +854,6 @@ def main(loglevel="INFO", chunk_size=0):
                 filterlow = float(filter.freqmin)
                 filterhigh = float(filter.freqmax)
                 # logger.debug("Filter: %s - %s Hz" % (filterlow, filterhigh))
-                freq_vec = sf.fftfreq(nfft, d=dt)[:nfft // 2]
                 freq_sel = np.where((freq_vec >= filterlow) & (freq_vec <= filterhigh))[0]
                 low = freq_sel[0] - napod
                 if low <= 0:
@@ -856,12 +871,13 @@ def main(loglevel="INFO", chunk_size=0):
                 # the spectral window itself, so no prior bandpass is needed).
                 # For PCC and AC: _data_bp is the starting point.
                 # For CC+no-whiten: _data_bp is used directly.
-                _data_raw = data.copy()
-                _data_bp = np.array([
-                    bandpass(tr, freqmin=filterlow, freqmax=filterhigh,
-                             df=params.cc.cc_sampling_rate, corners=8)
-                    for tr in _data_raw
-                ])
+                # No copy needed — data is never modified in the filter loop
+                # (whiten2 and winsorizing operate on ffts, not on data/_data_raw).
+                _data_raw = data
+                # Vectorized bandpass: one sosfilt call on (n_stations, N)
+                # instead of N individual bandpass() calls, each of which
+                # re-runs iirfilter+zpk2sos. SOS coefficients pre-computed above.
+                _data_bp = _sosfilt(_filter_sos[filter_name], data, axis=1)
 
                 # ── Auto-Correlation (AC) ─────────────────────────────────
                 # Whitening must NOT be applied before AC: spectral whitening
