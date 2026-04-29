@@ -60,7 +60,9 @@ dependencies = [
     "pooch",
     "tables",             # PyTables: backend for pd.read_hdf/to_hdf in get_results_all and export_allcorr
     "netcdf4",
-    "pyyaml"]
+    "pyyaml",
+    "zstandard",
+    "platformdirs"]
 
 [project.optional-dependencies]
 doc = [
