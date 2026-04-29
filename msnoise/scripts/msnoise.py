@@ -2959,7 +2959,7 @@ def utils_run_workflow(ctx, threads, hpc, from_category, until_category,
 
 @utils.command(name="download")
 @click.option("--sds-path", "sds_path", default=None,
-              type=click.Path(file_okay=False, writable=True, path_type=Path),
+              type=click.Path(file_okay=False, writable=True),
               metavar="PATH",
               help="SDS archive root to write into.  Auto-detected from the "
                    "DataSource table when unambiguous; falls back to ./SDS.")
@@ -2988,15 +2988,15 @@ def utils_download(ctx, sds_path, startdate, enddate):
         msnoise utils download --sds-path /data/SDS
         msnoise utils download --startdate 2013-06-01 --enddate 2013-06-30
     """
-    from pathlib import Path
     from ..core.db import connect
     from ..msnoise_table_def import declare_tables
     from ..core.fdsn import mass_download
+    from pathlib import Path
 
     db      = connect()
     _schema = declare_tables()
     mass_download(db, _schema,
-                  sds_root=sds_path,
+                  sds_root=Path(sds_path) if sds_path else None,
                   startdate_override=startdate,
                   enddate_override=enddate)
 def run():
