@@ -227,6 +227,15 @@ Exporting an existing project
 The round-trip is symmetric.  To snapshot a configured project back to a
 project YAML::
 
+.. note::
+
+   When ``--from-yaml`` detects a remote (FDSN/EIDA) DataSource **and** the
+   project has explicit ``startdate``/``enddate`` values, it interactively
+   prompts whether to bulk-download waveforms, create preprocess jobs for
+   on-the-fly streaming, or skip.  If dates are still at their default values
+   (``1970-01-01`` / ``2100-01-01``), the prompt is skipped with a warning.
+   See :ref:`fdsn_download` for the full description of both workflows.
+
     msnoise db export-yaml project.yaml
 
 Only non-default values are written by default, keeping the file minimal and

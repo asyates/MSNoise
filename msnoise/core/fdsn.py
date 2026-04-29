@@ -1,9 +1,39 @@
 """FDSN/EIDA waveform fetching and bulk SDS download for MSNoise.
 
-This module handles fetching raw waveforms from FDSN web services or the
-EIDA routing client, writing optional raw caches, and per-station error
-handling.  It is the **only** place in MSNoise that makes network calls to
-external data services.
+This module is the **only** place in MSNoise that makes network calls to
+external data services.  It provides two distinct modes of data access:
+
+**On-the-fly fetch** (used by the preprocess step)
+    :func:`fetch_and_preprocess` / :func:`fetch_raw_waveforms` —
+    called per station per day during the preprocess worker loop.
+    Streams waveforms directly from FDSN into the processing pipeline
+    without writing a local archive.
+
+**Bulk download** (:func:`mass_download`)
+    Wraps ObsPy's :class:`~obspy.clients.fdsn.mass_downloader.MassDownloader`
+    to fetch all waveforms for the full project date range in one call,
+    routing them into a day-aligned local SDS archive.  Station gating is
+    done server-side via an ObsPy
+    :class:`~obspy.core.inventory.Inventory` built from the MSNoise station
+    table — avoiding any NSLC cartesian blowup.  After bulk download,
+    run ``msnoise scan_archive`` to populate data availability before
+    starting the pipeline.
+
+Typical bulk-download sequence::
+
+    msnoise db init --from-yaml project.yaml
+    msnoise utils import-stationxml https://...   # populates locs/chans
+    msnoise utils download                        # calls mass_download()
+    msnoise scan_archive --init
+    msnoise utils run_workflow
+
+SDS root resolution (in order):
+
+1. Explicit ``--sds-path`` CLI option.
+2. The single unambiguous local SDS DataSource URI in the database.
+3. ``./SDS`` (with a warning).
+
+StationXML files are written to ``<sds_root>/../stationxml/`` and never
 """
 
 __all__ = [
