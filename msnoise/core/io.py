@@ -203,22 +203,20 @@ def _xr_insert_or_update(dataset, new):
 def _xr_save_and_close(dataset, fn, encoding=None):
     """Write *dataset* to *fn* with float32+zlib encoding by default."""
     import time
-    dirpath = os.path.dirname(fn)
-    dir_existed = os.path.isdir(dirpath)
-    os.makedirs(dirpath, exist_ok=True)
+    os.makedirs(os.path.dirname(fn), exist_ok=True)
     enc = encoding if encoding is not None else _f32_encoding(dataset)
-    # On GPFS a freshly created directory inode may not have propagated its
-    # write token to the creating client yet.  Retry briefly on PermissionError
-    # when we just created the directory; the token is typically available
-    # within a second.
-    for _attempt in range(6):
+    # On GPFS, creating a new file in a directory whose write token is held
+    # by another client (e.g. another worker that just created the dir or
+    # another file in it) raises PermissionError.  Retry with backoff until
+    # the token is released — typically within a second.
+    for _attempt in range(8):
         try:
             dataset.to_netcdf(fn, mode="w", encoding=enc, engine="netcdf4")
             break
         except PermissionError:
-            if _attempt == 5 or dir_existed:
+            if _attempt == 7:
                 raise
-            time.sleep(0.5 * (1 + _attempt))
+            time.sleep(0.3 * (1 + _attempt))
     dataset.close()
     del dataset
 
