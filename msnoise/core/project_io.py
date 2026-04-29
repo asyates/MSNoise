@@ -500,17 +500,21 @@ def reconstruct_jobs_from_filesystem(session, schema, level: str, root: str | Pa
 
 def import_project_archive(
     pointer_path: str | Path,
-    level: str,
+    level: "str | list[str]",
     project_dir: str | Path,
 ) -> Path:
-    """Download and extract a project archive from a ``bundle_pointer.yaml``.
+    """Download and extract one or more project archives from a ``bundle_pointer.yaml``.
 
     :param pointer_path: Path to ``bundle_pointer.yaml``.
-    :param level:        Entry level to import (must be listed in the pointer).
-    :param project_dir:  Destination directory (created if absent).
+    :param level:        Entry level(s) to import.  Pass a single string
+                         (e.g. ``"stack"``), a list (``["stack", "dvv"]``), or
+                         ``"all"`` to download every level listed in the pointer.
+    :param project_dir:  Destination directory (created if absent).  All
+                         archives are extracted into the **same** directory —
+                         their ``_output/`` trees never overlap.
     :returns:            Absolute path to the extracted project root.
-    :raises KeyError:    if *level* is not listed in ``bundle_pointer.yaml``.
-    :raises ValueError:  if the downloaded archive fails the SHA-256 check.
+    :raises KeyError:    if a requested level is absent from ``bundle_pointer.yaml``.
+    :raises ValueError:  if a downloaded archive fails the SHA-256 check.
     """
     import tempfile
     import urllib.request
@@ -520,41 +524,51 @@ def import_project_archive(
     with open(pointer_path, encoding="utf-8") as fh:
         pointer = yaml.safe_load(fh)
 
-    levels = pointer.get("levels", {})
-    if level not in levels:
-        available = list(levels)
+    available = pointer.get("levels", {})
+
+    # Resolve which levels to download
+    if level == "all":
+        levels_to_get = list(available)
+    elif isinstance(level, str):
+        levels_to_get = [level]
+    else:
+        levels_to_get = list(level)
+
+    missing = [lv for lv in levels_to_get if lv not in available]
+    if missing:
         raise KeyError(
-            f"Level {level!r} not in bundle_pointer.yaml. "
-            f"Available: {available}"
+            f"Level(s) {missing} not in bundle_pointer.yaml. "
+            f"Available: {list(available)}"
         )
-
-    entry = levels[level]
-    url = entry["url"]
-    expected_sha = entry.get("sha256", "")
-
-    # Download with progress
-    import sys
-    print(f"Downloading {url} …", flush=True)
 
     def _report(block, block_size, total):
         if total > 0:
             pct = min(100, block * block_size * 100 // total)
             print(f"\r  {pct}%", end="", flush=True)
 
-    with tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
+    root = None
+    for lv in levels_to_get:
+        entry = available[lv]
+        url = entry["url"]
+        expected_sha = entry.get("sha256", "")
 
-    urllib.request.urlretrieve(url, str(tmp_path), reporthook=_report)
-    print()  # newline after progress
+        print(f"Downloading level={lv!r}: {url} …", flush=True)
 
-    # Verify sha256
-    actual_sha = file_sha256(tmp_path)
-    if expected_sha and actual_sha != expected_sha:
+        with tempfile.NamedTemporaryFile(suffix=".tar.zst", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+
+        urllib.request.urlretrieve(url, str(tmp_path), reporthook=_report)
+        print()
+
+        actual_sha = file_sha256(tmp_path)
+        if expected_sha and actual_sha != expected_sha:
+            tmp_path.unlink(missing_ok=True)
+            raise ValueError(
+                f"SHA-256 mismatch for level={lv!r}: "
+                f"expected {expected_sha!r}, got {actual_sha!r}"
+            )
+
+        root = extract_archive(tmp_path, project_dir)
         tmp_path.unlink(missing_ok=True)
-        raise ValueError(
-            f"SHA-256 mismatch: expected {expected_sha!r}, got {actual_sha!r}"
-        )
 
-    root = extract_archive(tmp_path, project_dir)
-    tmp_path.unlink(missing_ok=True)
     return root

@@ -3081,12 +3081,12 @@ def project_export(level, output, project_dir):
 )
 @click.option(
     "--level",
-    required=True,
-    type=click.Choice(
-        ["preprocess", "cc", "stack", "mwcs", "stretching", "wavelet", "dvv"],
-        case_sensitive=True,
-    ),
-    help="Entry level to download and import.",
+    "levels",
+    multiple=True,
+    metavar="LEVEL",
+    help="Entry level(s) to download and import.  Repeat for multiple levels "
+         "(e.g. --level stack --level dvv).  Pass 'all' to download every "
+         "level listed in bundle_pointer.yaml.",
 )
 @click.option(
     "--project-dir",
@@ -3102,34 +3102,51 @@ def project_export(level, output, project_dir):
     help="Reconstruct flag=D jobs from the extracted _output/ tree "
          "so the pipeline can be resumed immediately.",
 )
-def project_import(pointer, level, project_dir, with_jobs):
-    """Download and import a project archive from a bundle_pointer.yaml.
+def project_import(pointer, levels, project_dir, with_jobs):
+    """Download and import project archive(s) from a bundle_pointer.yaml.
 
-    Downloads the .tar.zst archive for the requested level, verifies its
-    SHA-256, extracts it, initialises the database, and optionally
-    reconstructs flag=D jobs so that 'msnoise new_jobs --after <level>'
-    generates the correct downstream jobs.
+    Downloads .tar.zst archive(s) for the requested level(s), verifies
+    SHA-256, extracts all into the same project directory, initialises
+    the database, and optionally reconstructs flag=D jobs.
 
-    Example::
+    Examples::
 
-        msnoise project import --from bundle_pointer.yaml --level stack \\
-            --project-dir ./my_project --with-jobs
+        # single level
+        msnoise project import --from bundle_pointer.yaml --level stack
+
+        # multiple levels — all extracted into the same project dir
+        msnoise project import --from bundle_pointer.yaml \\
+            --level stack --level dvv --project-dir ./my_project --with-jobs
+
+        # everything in bundle_pointer.yaml
+        msnoise project import --from bundle_pointer.yaml \\
+            --level all --project-dir ./my_project --with-jobs
     """
     from ..core.project_io import import_project_archive
     from ..project import MSNoiseProject
 
-    root = import_project_archive(pointer, level, project_dir)
+    if not levels:
+        raise click.UsageError("Provide at least one --level (or --level all).")
+
+    # "all" as a single value means download everything
+    level_arg = "all" if list(levels) == ["all"] else list(levels)
+
+    root = import_project_archive(pointer, level_arg, project_dir)
     click.echo(f"Extracted to {root}")
 
     proj = MSNoiseProject.from_project_dir(root)
+    # Record imported levels for init_db with_jobs reconstruction
+    proj._imported_levels = (
+        None if level_arg == "all" else level_arg  # None → reads meta.yaml per archive
+    )
     proj.init_db(with_jobs=with_jobs)
     click.echo("Database initialised.")
 
     if with_jobs:
-        chains = level  # already printed inside init_db
+        effective = level_arg if isinstance(level_arg, list) else list(levels)
         click.echo(
             f"\nReady.  Resume the pipeline with:\n"
-            f"  msnoise new_jobs --after {level}"
+            + "\n".join(f"  msnoise new_jobs --after {lv}" for lv in effective)
         )
 
 

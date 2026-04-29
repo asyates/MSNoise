@@ -350,21 +350,24 @@ class MRPPaper:
 
     def get_project(
         self,
-        level: str,
+        level: "str | list[str]",
         project: str = "default",
     ) -> "msnoise.project.MSNoiseProject":  # type: ignore[name-defined]
-        """Download the archive for *level* and return an :class:`~msnoise.project.MSNoiseProject`.
+        """Download archive(s) for *level* and return an :class:`~msnoise.project.MSNoiseProject`.
 
-        The archive is downloaded once and cached permanently; subsequent calls
-        return immediately.  Use :meth:`MRP.clear_cache` to force a fresh
-        download.
+        Archives are downloaded once and cached permanently; subsequent calls
+        return immediately (or skip already-extracted levels).  Use
+        :meth:`MRP.clear_cache` to force a fresh download.
 
-        :param level:   Entry level to download (e.g. ``"stack"``).
+        :param level:   Entry level(s) to download.  Pass a single string
+                        (e.g. ``"stack"``), a list (``["stack", "dvv"]``), or
+                        ``"all"`` to download every level in ``bundle_pointer.yaml``.
+                        All archives are extracted into the **same** directory.
         :param project: Project name for papers with multiple datasets.
-                        Omit (or pass ``"default"``) for single-project papers.
-        :raises LevelNotAvailable: if *level* is not in ``bundle_pointer.yaml``.
-        :raises AmbiguousProject:  if the paper has multiple projects and
-                                   *project* was not specified.
+                        Omit (or ``"default"``) for single-project papers.
+        :raises LevelNotAvailable: if a requested level is absent.
+        :raises AmbiguousProject:  if multiple projects exist and *project* was
+                                   not specified.
         :raises FileNotFoundError: if no ``bundle_pointer.yaml`` exists.
         """
         from .project import MSNoiseProject
@@ -386,53 +389,74 @@ class MRPPaper:
             )
 
         # Check level availability
-        levels = self._pointer.get("levels", {})
-        if not levels:
+        available_levels = self._pointer.get("levels", {})
+        if not available_levels:
             raise FileNotFoundError(
                 f"No bundle_pointer.yaml found for {self.paper_id!r}."
             )
-        if level not in levels:
+
+        # Resolve level list
+        if level == "all":
+            levels_to_get = list(available_levels)
+        elif isinstance(level, str):
+            levels_to_get = [level]
+        else:
+            levels_to_get = list(level)
+
+        missing = [lv for lv in levels_to_get if lv not in available_levels]
+        if missing:
             raise LevelNotAvailable(
-                f"Level {level!r} not available for {self.paper_id!r}. "
-                f"Available: {list(levels)}"
+                f"Level(s) {missing} not available for {self.paper_id!r}. "
+                f"Available: {list(available_levels)}"
             )
 
-        entry = levels[level]
-        url = entry["url"]
-        expected_sha = entry.get("sha256", "")
+        # Build a stable extract dir name from the level set
+        if level == "all" or set(levels_to_get) == set(available_levels):
+            level_tag = "all"
+        elif len(levels_to_get) == 1:
+            level_tag = levels_to_get[0]
+        else:
+            level_tag = "+".join(sorted(levels_to_get))
 
-        # Destination for the extracted project
         extract_dir = (
             self._mrp.cache_dir
             / self.paper_id
             / project
-            / f"level_{level}"
+            / f"level_{level_tag}"
         )
 
-        # If already extracted (and has project.yaml), skip download
+        # Skip download entirely if already extracted
         if (extract_dir / "project.yaml").exists():
-            return MSNoiseProject.from_project_dir(extract_dir)
+            proj = MSNoiseProject.from_project_dir(extract_dir)
+            proj._imported_levels = levels_to_get
+            return proj
 
-        # Download archive (cached by sha256-named file)
-        archive_name = f"level_{level}_{expected_sha[:12] if expected_sha else 'nosha'}.tar.zst"
-        archive_path = self._cache_dir / archive_name
+        # Download + extract each level into the same extract_dir
+        from .core.project_io import extract_archive, file_sha256
 
-        if not archive_path.exists():
-            print(f"Downloading {url} …")
-            self._mrp._download(url, archive_path)
+        for lv in levels_to_get:
+            entry = available_levels[lv]
+            url = entry["url"]
+            expected_sha = entry.get("sha256", "")
 
-            if expected_sha:
-                from .core.project_io import file_sha256
-                actual = file_sha256(archive_path)
-                if actual != expected_sha:
-                    archive_path.unlink(missing_ok=True)
-                    raise ValueError(
-                        f"SHA-256 mismatch for {self.paper_id!r} level={level!r}: "
-                        f"expected {expected_sha!r}, got {actual!r}"
-                    )
+            archive_name = f"level_{lv}_{expected_sha[:12] if expected_sha else 'nosha'}.tar.zst"
+            archive_path = self._cache_dir / archive_name
 
-        # Extract
-        from .core.project_io import extract_archive
-        extract_archive(archive_path, extract_dir)
+            if not archive_path.exists():
+                print(f"Downloading level={lv!r}: {url} …")
+                self._mrp._download(url, archive_path)
 
-        return MSNoiseProject.from_project_dir(extract_dir)
+                if expected_sha:
+                    actual = file_sha256(archive_path)
+                    if actual != expected_sha:
+                        archive_path.unlink(missing_ok=True)
+                        raise ValueError(
+                            f"SHA-256 mismatch for {self.paper_id!r} level={lv!r}: "
+                            f"expected {expected_sha!r}, got {actual!r}"
+                        )
+
+            extract_archive(archive_path, extract_dir)
+
+        proj = MSNoiseProject.from_project_dir(extract_dir)
+        proj._imported_levels = levels_to_get
+        return proj

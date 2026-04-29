@@ -143,10 +143,12 @@ class MSNoiseProject:
         project_dir: str | Path,
         _db=None,
         _tmpdir=None,
+        _imported_levels: "list[str] | None" = None,
     ) -> None:
         self.project_dir: str = str(Path(project_dir).resolve())
         self._db = _db
         self._tmpdir = _tmpdir  # TemporaryDirectory kept alive if archive extracted to temp
+        self._imported_levels = _imported_levels  # set when created via from_archive / import
 
     # ------------------------------------------------------------------ #
     # Constructors                                                         #
@@ -178,18 +180,22 @@ class MSNoiseProject:
     @classmethod
     def from_archive(
         cls,
-        path: str | Path,
-        project_dir: str | Path | None = None,
+        path: "str | Path | list",
+        project_dir: "str | Path | None" = None,
     ) -> "MSNoiseProject":
-        """Load a project from a ``.tar.zst`` project archive.
+        """Load a project from one or more ``.tar.zst`` project archives.
 
-        If *project_dir* is ``None`` the archive is extracted into a temporary
-        directory that is kept alive for the lifetime of the returned object.
+        If *project_dir* is ``None`` the archive(s) are extracted into a
+        temporary directory kept alive for the lifetime of the returned object.
         Pass an explicit *project_dir* for a persistent extraction.
 
-        :param path:        Path to the ``.tar.zst`` archive.
-        :param project_dir: Destination directory for extraction.  Created if
-                            absent.  ``None`` → auto temporary directory.
+        When a list of archives is supplied they are all extracted into the
+        **same** *project_dir* — their ``_output/`` trees never overlap, so
+        the result is a composite project equivalent to having run every
+        bundled level locally.
+
+        :param path:        Path **or list of paths** to ``.tar.zst`` archive(s).
+        :param project_dir: Destination directory.  ``None`` → auto temp dir.
         :returns:           :class:`MSNoiseProject` with ``_db=None``.
         """
         from .core.project_io import extract_archive
@@ -199,7 +205,11 @@ class MSNoiseProject:
             _tmpdir = tempfile.TemporaryDirectory(prefix="msnoise_project_")
             project_dir = _tmpdir.name
 
-        root = extract_archive(path, project_dir)
+        paths = [path] if isinstance(path, (str, Path)) else list(path)
+        root = None
+        for p in paths:
+            root = extract_archive(p, project_dir)
+
         return cls(root, _tmpdir=_tmpdir)
 
     @classmethod
@@ -274,22 +284,35 @@ class MSNoiseProject:
         self._db = connect(inifile=inifile)
 
         if with_jobs:
-            from .core.project_io import reconstruct_jobs_from_filesystem
+            from .core.project_io import reconstruct_jobs_from_filesystem, LEVEL_CATEGORIES
             from .msnoise_table_def import declare_tables
             import yaml as _yaml
-            meta_path = os.path.join(self.project_dir, "meta.yaml")
-            if not os.path.isfile(meta_path):
-                raise FileNotFoundError(
-                    "meta.yaml not found — cannot determine entry level for "
-                    "job reconstruction.  Pass level= explicitly or ensure the "
-                    "project archive is intact."
-                )
-            with open(meta_path, encoding="utf-8") as _fh:
-                meta = _yaml.safe_load(_fh)
-            level = meta["entry_level"]
             _schema = declare_tables()
-            n = reconstruct_jobs_from_filesystem(self._db, _schema, level=level, root=self.project_dir)
-            print(f"Reconstructed {n} flag=D jobs from filesystem (level={level!r}).")
+
+            # Determine which levels to reconstruct:
+            # 1. Use _imported_levels if set (set by from_archive / import_project_archive)
+            # 2. Fall back to meta.yaml (single-level import via CLI)
+            if self._imported_levels:
+                levels_to_reconstruct = self._imported_levels
+            else:
+                meta_path = os.path.join(self.project_dir, "meta.yaml")
+                if not os.path.isfile(meta_path):
+                    raise FileNotFoundError(
+                        "meta.yaml not found — cannot determine entry level for "
+                        "job reconstruction.  Ensure the project archive is intact."
+                    )
+                with open(meta_path, encoding="utf-8") as _fh:
+                    meta = _yaml.safe_load(_fh)
+                levels_to_reconstruct = [meta["entry_level"]]
+
+            total = 0
+            for lv in levels_to_reconstruct:
+                n = reconstruct_jobs_from_filesystem(
+                    self._db, _schema, level=lv, root=self.project_dir
+                )
+                total += n
+            print(f"Reconstructed {total} flag=D jobs from filesystem "
+                  f"(levels={levels_to_reconstruct}).")
 
     # ------------------------------------------------------------------ #
     # Result access                                                       #
