@@ -210,6 +210,11 @@ def main(stype, loglevel="INFO"):
                 dr = c.resample(times="%is" % params.cc.corr_duration).mean()
                 c.close()
                 del c  # free raw CCF data — dr is all we need from here
+                # Materialise daily means into RAM now.  dr is small
+                # (N_days × n_taxis) regardless of how many per-window
+                # files were loaded.  Without this, each mov_stack
+                # iteration re-triggers a full disk read via the dask graph.
+                dr = dr.compute()
 
             else:
                 logger.warning("keep_all=N is unsupported in lineage workflow; "
@@ -219,6 +224,7 @@ def main(stype, loglevel="INFO"):
                 dr = c.resample(times="1D").mean()
                 c.close()
                 del c  # free raw CCF data — dr is all we need from here
+                dr = dr.compute()
 
             if wienerfilt:
                 dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold)
