@@ -391,6 +391,12 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
             das.append(da)
         except FileNotFoundError:
             pass
+        except OSError as e:
+            import logging
+            logging.getLogger("msnoise.io").warning(
+                f"Skipping corrupt CCF file for {station1}/{station2} "
+                f"{components} {date_str}: {e}"
+            )
 
     if not das:
         # Fallback: daily stacks from keep_days (xr_save_ccf_daily)
@@ -404,6 +410,12 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
                 das.append(da)
             except FileNotFoundError:
                 pass
+            except OSError as e:
+                import logging
+                logging.getLogger("msnoise.io").warning(
+                    f"Skipping corrupt daily CCF for {station1}/{station2} "
+                    f"{components} {date_str}: {e}"
+                )
 
     if not das:
         return xr.Dataset()
