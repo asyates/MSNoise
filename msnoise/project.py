@@ -377,6 +377,24 @@ class MSNoiseProject:
                     global_dict["output_folder"] = str(project_dir)
                     layers["global"] = AttribDict(global_dict)
 
+            # Back-fill CSV defaults into every layer — params.yaml may
+            # have been written with only_non_defaults=True, leaving keys
+            # like maxlag absent.  Merge order: defaults < yaml values.
+            import csv as _csv
+            from pathlib import Path as _Path
+            _cfg_dir = _Path(__file__).parent / "config"
+            _layers = object.__getattribute__(params, "_layers")
+            for _cat, _layer in list(_layers.items()):
+                _csv_path = _cfg_dir / f"config_{_cat}.csv"
+                if not _csv_path.exists():
+                    continue
+                with open(_csv_path, newline="", encoding="utf-8") as _fh:
+                    _defs = {r["name"]: r["default"] for r in _csv.DictReader(_fh)}
+                # Only set keys that are genuinely missing
+                for _k, _v in _defs.items():
+                    if not hasattr(_layer, _k):
+                        _layer[_k] = _v
+
             # Construct MSNoiseResult directly — bypass from_bundle's
             # unconditional output_folder override.
             inst = MSNoiseResult.__new__(MSNoiseResult)
