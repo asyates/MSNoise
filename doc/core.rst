@@ -62,3 +62,9 @@ FDSN / EIDA Data Access
 
 .. automodule:: msnoise.core.fdsn
    :members:
+
+Project Archive I/O
+--------------------
+
+.. automodule:: msnoise.core.project_io
+   :members:

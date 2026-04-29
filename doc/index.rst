@@ -46,6 +46,8 @@ with the exact commands at each stage.
     :caption: Using MSNoise
 
     results
+    project
+    mrp_guide
     how_tos
     notebooks/index
 
@@ -61,6 +63,7 @@ recipes for common tasks and a gallery of worked examples.
     api
     table_def
     plugins
+    papers
 
 Full reference for the Python API, internal modules, database schema, and
 the plugin system.
