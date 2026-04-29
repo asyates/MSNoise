@@ -380,17 +380,19 @@ def db_init(tech, auto_workflow, from_yaml, yes):
                         while cur <= end:
                             dates.append(cur.isoformat())
                             cur += datetime.timedelta(days=1)
-                        n = 0
-                        for day in dates:
-                            for sta in get_stations(db, all=False):
-                                for loc in (sta.locs() or [""]):
-                                    pair = f"{sta.net}.{sta.sta}.{loc}"
-                                    update_job(db, day, pair, pre_step.step_name, "T",
-                                               step_id=pre_step.step_id,
-                                               lineage=pre_step.step_name,
-                                               commit=False)
-                                    n += 1
-                            db.commit()
+                        from ..core.workflow import massive_insert_job
+                        now = datetime.datetime.utcnow()
+                        jobs = [
+                            {"day": day, "pair": f"{sta.net}.{sta.sta}.{loc}",
+                             "jobtype": pre_step.step_name, "flag": "T",
+                             "step_id": pre_step.step_id,
+                             "lineage": pre_step.step_name, "lastmod": now}
+                            for day in dates
+                            for sta in get_stations(db, all=False)
+                            for loc in (sta.locs() or [""])
+                        ]
+                        massive_insert_job(db, jobs)
+                        n = len(jobs)
                         click.echo(f"  Created {n} preprocess job(s) over {len(dates)} day(s).")
                         click.echo(f"\n  Next step:")
                         click.echo(f"    msnoise utils run_workflow")
