@@ -576,61 +576,94 @@ def main(init=False, threads=1, crondays=None, forced_path=None,
         # (See the official doc for datetime.timestamp())
         mintime = (datetime.datetime.now(datetime.timezone.utc) - modification_delta
                    - datetime.datetime(1970, 1, 1, 0, 0, tzinfo=datetime.timezone.utc)).total_seconds()
-    stations = []
     if forced_path is None:
-        # Look up the default DataSource (id=1) for URI and data_structure
-        from .core.stations import get_default_data_source
-        default_ds = get_default_data_source(db)
-        archive_format = default_ds.archive_format or ""
-        ds_uri = default_ds.uri or ""
-        data_folder = os.path.realpath(ds_uri) if ds_uri else os.getcwd()
-        ds_structure = default_ds.data_structure or "SDS"
+        # ── Multi-DataSource scan ─────────────────────────────────────────
+        # Iterate over ALL local (non-remote) DataSources, not just ref=1.
+        # Workers inherit _data_source_root/_data_source_id at fork time, so
+        # we run scan_archive() once per DataSource sequentially.
+        from .core.stations import list_data_sources, resolve_data_source
+        from .core.fdsn import is_remote_source
 
-        # Set module-level globals so worker processes (forked) inherit them
-        global _data_source_root, _data_source_id
-        _data_source_root = data_folder
-        _data_source_id   = default_ds.ref
+        all_ds       = list_data_sources(db)
+        local_ds     = [ds for ds in all_ds if not is_remote_source(ds.uri or "")]
+        all_stations = api.get_stations(db, all=False)
 
-        logger.debug('Will search for files in folder: %s (DataSource %r id=%s)'
-                     % (data_folder, default_ds.name, default_ds.ref))
-        channels = [c.strip() for c in (default_ds.channels or "*").split(',')]
-        logger.debug('Will search for channels: %s' % channels)
-        stations = api.get_stations(db, all=False)
-        rawpath = get_data_structure(ds_structure)
-        if rawpath is None:
-            raise FatalError("Cannot read configured data_structure '%s'"
-                             "anywhere (tried file custom.py in folder '%s')."
-                             % (ds_structure, os.getcwd()))
+        if not local_ds:
+            logger.warning("No local DataSources found. Nothing to scan.")
+            db.close()
+        else:
+            # Map each station to its effective DataSource in one pass
+            ds_stations_map = {ds.ref: [] for ds in local_ds}
+            for s in all_stations:
+                eff = resolve_data_source(db, s)
+                if eff.ref in ds_stations_map:
+                    ds_stations_map[eff.ref].append(s)
 
-        if not os.path.isdir(data_folder):
-            raise FatalError("Cannot find directory '{}'. Aborting."
-                             .format(data_folder))
-        folders_to_glob = get_archives_folders(
-                data_folder,
-                rawpath,
-                range(startdate.year,
-                      min(datetime.datetime.now(datetime.timezone.utc).year, enddate.year) + 1),
-                stations,
-                channels)
-        # logger.debug('Folders to glob: %s' % ','.join(folders_to_glob))
+            years = range(startdate.year,
+                          min(datetime.datetime.now(datetime.timezone.utc).year,
+                              enddate.year) + 1)
+
+            # Build scan plan for each local DataSource while db is still open
+            scan_plans = []   # list of (ds, data_folder, archive_format, folders)
+            for ds in local_ds:
+                ds_uri       = ds.uri or ""
+                data_folder  = os.path.realpath(ds_uri) if ds_uri else os.getcwd()
+                ds_structure = ds.data_structure or "SDS"
+                ds_format    = ds.archive_format or ""
+                ds_channels  = [c.strip() for c in (ds.channels or "*").split(',')]
+                ds_stns      = ds_stations_map.get(ds.ref, [])
+
+                if not ds_stns:
+                    logger.debug("DataSource %r: no stations assigned, skipping." % ds.name)
+                    continue
+                rawpath = get_data_structure(ds_structure)
+                if rawpath is None:
+                    logger.error("DataSource %r: unknown data_structure %r, skipping."
+                                 % (ds.name, ds_structure))
+                    continue
+                if not os.path.isdir(data_folder):
+                    logger.warning("DataSource %r: folder %r not found, skipping."
+                                   % (ds.name, data_folder))
+                    continue
+                folders = get_archives_folders(data_folder, rawpath, years,
+                                               ds_stns, ds_channels)
+                scan_plans.append((ds, data_folder, ds_format, folders))
+                logger.info("DataSource %r (%s): %d directories to scan"
+                            % (ds.name, data_folder, len(folders)))
+
+            db.close()
+
+            global _data_source_root, _data_source_id
+            for ds, data_folder, ds_format, folders_to_glob in scan_plans:
+                # Update globals before forking — workers inherit correct values
+                _data_source_root = data_folder
+                _data_source_id   = ds.ref
+                logger.info("Scanning DataSource %r ..." % ds.name)
+                try:
+                    scan_archive(folders_to_glob, threads, mintime, startdate,
+                                 enddate, goal_sampling_rate, ds_format)
+                except Exception as e:
+                    logger.critical("Scan aborted for DataSource %r: %s"
+                                    % (ds.name, e))
+                    traceback.print_exc()
+
     elif forced_path_recursive:
-        # Scan directory and all subdirectories in the tree
+        db.close()
         folders_to_glob = [d[0] for d in walk(forced_path)]
+        try:
+            scan_archive(folders_to_glob, threads, mintime, startdate, enddate,
+                         goal_sampling_rate, archive_format)
+        except Exception as e:
+            logger.critical('Scan aborted: %s' % e)
+            traceback.print_exc()
     else:
-        # Only scan the forced directory
-        folders_to_glob = [forced_path]
+        db.close()
+        try:
+            scan_archive([forced_path], threads, mintime, startdate, enddate,
+                         goal_sampling_rate, archive_format)
+        except Exception as e:
+            logger.critical('Scan aborted: %s' % e)
+            traceback.print_exc()
 
-    # Close the db connection as we don't need it in this process any more.
-    db.close()
-
-    # Run the main scan
-    try:
-        scan_archive(folders_to_glob, threads, mintime, startdate, enddate,
-                     goal_sampling_rate, archive_format)
-    except Exception as e:
-        logger.critical('Scan aborted because the following error occured '
-                        'while scanning the archive:\n{}'.format(e))
-        traceback.print_exc()
-    else:
-        logger.info('*** Finished: Scan Archive ***')
-        logger.info('It took %.2f seconds' % (time.time() - scanning_starttime))
+    logger.info('*** Finished: Scan Archive ***')
+    logger.info('It took %.2f seconds' % (time.time() - scanning_starttime))
