@@ -264,7 +264,21 @@ def export_project(
     root = Path(project_dir).resolve()
     yaml_path = root / "project.yaml"
     if not yaml_path.exists():
-        raise FileNotFoundError(f"project.yaml not found in {root}")
+        # project.yaml may not exist when the project was initialized directly
+        # (not via --from-yaml).  Auto-generate it from the live DB.
+        try:
+            from msnoise.core.db import connect as _connect
+            from msnoise.core.config import export_project_to_yaml
+            _db = _connect()
+            export_project_to_yaml(_db, str(yaml_path), only_non_defaults=True)
+            _db.close()
+        except Exception:
+            pass
+    if not yaml_path.exists():
+        raise FileNotFoundError(
+            f"project.yaml not found in {root} and could not be auto-generated. "
+            f"Run: msnoise db export-yaml project.yaml"
+        )
 
     output_path = Path(output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
