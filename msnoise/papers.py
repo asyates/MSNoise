@@ -159,15 +159,35 @@ class MRP:
 
     @staticmethod
     def _download(url: str, dest: Path) -> None:
-        """Download *url* to *dest* using urllib (no extra deps)."""
+        """Download *url* to *dest* using urllib (no extra deps).
+
+        Supports ``http://``, ``https://``, and ``ftp://`` URLs (Python's
+        urllib includes a native FTP handler).  A progress line is printed
+        to stdout for files larger than 1 MB.
+        """
         import urllib.request
+        import sys
 
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(".tmp")
+
+        def _reporthook(block_num, block_size, total_size):
+            downloaded = block_num * block_size
+            if total_size > 0:
+                pct = min(100, downloaded * 100 // total_size)
+                mb = downloaded / 1e6
+                total_mb = total_size / 1e6
+                sys.stdout.write(f"\r  {pct:3d}%  {mb:.1f} / {total_mb:.1f} MB")
+            else:
+                sys.stdout.write(f"\r  {downloaded / 1e6:.1f} MB downloaded")
+            sys.stdout.flush()
+
         try:
-            urllib.request.urlretrieve(url, str(tmp))
+            urllib.request.urlretrieve(url, str(tmp), reporthook=_reporthook)
+            sys.stdout.write("\n")
             tmp.replace(dest)
         except Exception:
+            sys.stdout.write("\n")
             tmp.unlink(missing_ok=True)
             raise
 
@@ -410,8 +430,10 @@ class MRPPaper:
                 f"Available: {list(available_levels)}"
             )
 
-        # Build a stable extract dir name from the level set
-        if level == "all" or set(levels_to_get) == set(available_levels):
+        # Build a stable extract dir name from the level set.
+        # Only use "all" when the caller literally passed level="all" —
+        # not when a single-level paper happens to match all available levels.
+        if level == "all":
             level_tag = "all"
         elif len(levels_to_get) == 1:
             level_tag = levels_to_get[0]

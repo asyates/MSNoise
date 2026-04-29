@@ -383,12 +383,23 @@ class MSNoiseProject:
             inst._db = None
             inst._bundle_root = str(step_dir)
             inst._tmpdir = None
-            inst.lineage_names = list(lineage_names)
+            # lineage_names comes from relative path parts — the archive
+            # may have been rooted under the original output_folder basename
+            # (e.g. "OUTPUT").  Strip any leading parts that aren't valid
+            # step names (<word>_<digit>) so _step_prefix never sees them.
+            import re as _re
+            _step_pat = _re.compile(r".+_\d+$")
+            clean_lineage = [n for n in lineage_names if _step_pat.match(n)]
+            # Derive the actual output root by walking up len(clean_lineage)
+            # levels from step_dir.  This handles archives that embed the
+            # original output_folder name (e.g. level_dvv/OUTPUT/preprocess_1/…).
+            actual_root = step_dir.parents[len(clean_lineage) - 1]
+            inst.lineage_names = clean_lineage
             inst.params = params
-            inst.output_folder = str(project_dir)
-            inst.category = _step_prefix(lineage_names[-1])
+            inst.output_folder = str(actual_root)
+            inst.category = _step_prefix(clean_lineage[-1])
             inst._present_categories = frozenset(
-                _step_prefix(n) for n in lineage_names
+                _step_prefix(n) for n in clean_lineage
             )
             results.append(inst)
 
