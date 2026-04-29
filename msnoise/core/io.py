@@ -363,6 +363,10 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
 
         <root> / *cc_lineage / filter_step / _output / all|daily / <comp> / <sta1>_<sta2> / <date>.nc
 
+    Data are stored internally as **float32** to halve the working-set size
+    relative to the float64 values written by s03.  Precision loss is negligible
+    for the rolling-mean operations performed by the stack worker.
+
     :param root: Output folder (``params.global_.output_folder``).
     :param lineage_names: Full lineage name list including the filter step,
         e.g. ``["preprocess_1", "cc_1", "filter_1", "stack_1"]``.
@@ -373,6 +377,9 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
     :returns: :class:`xarray.Dataset` with variable ``CCF`` and dims
         ``(times, taxis)``, sorted by ``times``.  Empty Dataset if no data found.
     """
+    import logging
+    import numpy as np
+
     # Derive cc_lineage and filter_step from lineage_names
     cc_idx = next(
         (i for i, n in enumerate(lineage_names) if n.startswith("cc_")), None
@@ -382,23 +389,32 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
     cc_lineage = lineage_names[:cc_idx + 1]   # e.g. ['preprocess_1', 'cc_1']
     filter_step = lineage_names[cc_idx + 1]   # e.g. 'filter_1'
 
-    das = []
+    # Collect raw numpy arrays + timestamps to avoid the double-copy that
+    # xr.concat causes (das list + combined array both live simultaneously).
+    # Each DataArray is deleted immediately after value extraction.
+    times_list = []   # list of 1-D numpy datetime64 arrays
+    data_list  = []   # list of 2-D numpy float32 arrays (n_windows, n_taxis)
+    taxis_vals = None
+
     for date in dates:
         date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
         try:
             da = xr_get_ccf_all(root, cc_lineage, filter_step,
                                 station1, station2, components, date_str)
-            das.append(da)
+            if taxis_vals is None:
+                taxis_vals = da.coords["taxis"].values.copy()
+            times_list.append(da.coords["times"].values)
+            data_list.append(da.values.astype(np.float32))
+            del da   # free float64 DataArray — numpy copy is all we need
         except FileNotFoundError:
             pass
         except OSError as e:
-            import logging
             logging.getLogger("msnoise.io").warning(
                 f"Skipping corrupt CCF file for {station1}/{station2} "
                 f"{components} {date_str}: {e}"
             )
 
-    if not das:
+    if not times_list:
         # Fallback: daily stacks from keep_days (xr_save_ccf_daily)
         for date in dates:
             date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
@@ -407,20 +423,40 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
                                       station1, station2, components, date_str)
                 t = pd.Timestamp(date_str)
                 da = da.expand_dims({"times": [t]})
-                das.append(da)
+                if taxis_vals is None:
+                    taxis_vals = da.coords["taxis"].values.copy()
+                times_list.append(da.coords["times"].values)
+                data_list.append(da.values.astype(np.float32))
+                del da
             except FileNotFoundError:
                 pass
             except OSError as e:
-                import logging
                 logging.getLogger("msnoise.io").warning(
                     f"Skipping corrupt daily CCF for {station1}/{station2} "
                     f"{components} {date_str}: {e}"
                 )
 
-    if not das:
+    if not times_list:
         return xr.Dataset()
-    combined = xr.concat(das, dim="times").sortby("times")
-    return combined.to_dataset(name="CCF")
+
+    # Single numpy concatenation — peak RAM here is:
+    #   data_list (N × float32) + combined (N × float32) = 2 × N × float32
+    # = 1 × N × float64 (vs 2 × N × float64 with xr.concat)
+    all_times = np.concatenate(times_list)
+    del times_list
+    all_data = np.concatenate(data_list, axis=0)
+    del data_list
+
+    # Sort by time (stable to preserve intra-day window order)
+    order = np.argsort(all_times, kind="stable")
+    all_times = all_times[order]
+    all_data  = all_data[order]
+    del order
+
+    return xr.Dataset(
+        {"CCF": (["times", "taxis"], all_data)},
+        coords={"times": all_times, "taxis": taxis_vals},
+    )
 
 
 # ── MWCS ────────────────────────────────────────────────────
