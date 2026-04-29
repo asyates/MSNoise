@@ -194,7 +194,7 @@ def main(stype, loglevel="INFO"):
                     c = xr_open_ccf_mfdataset(
                         params.global_.output_folder, lineage_names,
                         sta1, sta2, components, all_days,
-                        chunk_size=max(1, int(86400 / max(params.cc.corr_duration, 1))),
+                        chunk_size=max(1, 10 * int(86400 / max(params.cc.corr_duration, 1))),
                     )
                     if c is None:
                         logger.debug("Lazy load unavailable — falling back to eager")

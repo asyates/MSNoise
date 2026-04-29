@@ -460,7 +460,7 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
 
 
 def xr_open_ccf_mfdataset(root, lineage_names, station1, station2, components, dates,
-                           chunk_size: int = 24):
+                           chunk_size: int = 240):
     """Open per-day CCF files as a **lazy, dask-backed** Dataset.
 
     Unlike :func:`xr_load_ccf_for_stack`, no data is loaded into RAM until an
@@ -477,8 +477,10 @@ def xr_open_ccf_mfdataset(root, lineage_names, station1, station2, components, d
     :param station2:      Second station SEED id.
     :param components:    Component pair string e.g. ``"ZZ"``.
     :param dates:         Iterable of dates or ISO strings.
-    :param chunk_size:    Dask chunk size along the ``times`` dimension
-                          (default 24 — one day of hourly windows).
+    :param chunk_size:    Dask chunk size along the ``times`` dimension.
+                          Larger chunks mean fewer dask tasks and lower
+                          scheduler overhead.  Default 240 ≈ 10 days of
+                          hourly windows; reduce if RAM is very tight.
     :returns:             Lazy :class:`xarray.Dataset` with ``CCF`` variable
                           and dims ``(times, taxis)``, or ``None`` if lazy
                           loading is unavailable.
@@ -513,9 +515,15 @@ def xr_open_ccf_mfdataset(root, lineage_names, station1, station2, components, d
             paths,
             concat_dim="times",
             combine="nested",
+            data_vars="minimal",   # read non-concat variables from first file only
+            coords="minimal",      # trust first file's coords; skip cross-file checks
+            compat="override",     # skip per-file compatibility validation
             chunks={"times": chunk_size},
             engine="netcdf4",
         )
+        # open_mfdataset chunks at file boundaries regardless of chunk_size;
+        # rechunk explicitly to consolidate N files into larger dask tasks.
+        ds = ds.chunk({"times": chunk_size})
         if "CCF" not in ds and len(ds.data_vars) == 1:
             ds = ds.rename({next(iter(ds.data_vars)): "CCF"})
         return ds
