@@ -53,7 +53,7 @@ import numpy as np
 import pandas as pd
 from .core.db import connect, get_logger
 from .core.workflow import (get_next_lineage_batch, get_t_axis, is_next_job_for_step, massive_update_job, propagate_downstream)
-from .core.signal import validate_stack_data
+from .core.signal import validate_stack_data, rolling_mean_nan, rolling_stack
 from .core.io import xr_load_ccf_for_stack, xr_save_ccf
 from .core.signal import wiener_filt
 
@@ -94,7 +94,12 @@ def main(stype, loglevel="INFO"):
 
         taxis = get_t_axis(params)
 
-        mov_stacks = params.stack.mov_stack
+        mov_stacks   = params.stack.mov_stack
+        stack_method = params.stack.stack_method
+        pws_timegate = params.stack.pws_timegate
+        pws_power    = params.stack.pws_power
+        if stack_method != "linear":
+            logger.info(f"Moving stack: stack_method={stack_method!r}")
         wiener_mlen = params.stack.wiener_mlen
         wiener_nlen = params.stack.wiener_nlen
         wienerfilt = params.stack.wienerfilt
@@ -254,7 +259,23 @@ def main(stype, loglevel="INFO"):
                     if not duration_to_windows.is_integer():
                         logger.print("Warning, rounding down the number of windows to roll over")
                     duration_to_windows = int(max(1, math.floor(duration_to_windows)))
-                    xx = dr.rolling(times=duration_to_windows, min_periods=1).mean("win")
+                    # rolling_stack: O(N) for linear, O(N×W) for pws/tfpws.
+                    # xarray rolling is O(N×W) when NaN handling disables
+                    # its cumsum fast-path; rolling_mean_nan avoids that.
+                    rolled = rolling_stack(
+                        dr["CCF"].values, duration_to_windows,
+                        stack_method=stack_method,
+                        min_periods=1,
+                        pws_timegate=pws_timegate,
+                        pws_power=pws_power,
+                        goal_sampling_rate=params.cc.cc_sampling_rate,
+                        freqmin=params.filter.freqmin,
+                        freqmax=params.filter.freqmax,
+                    )
+                    xx = xr.Dataset(
+                        {"CCF": (dr["CCF"].dims, rolled)},
+                        coords=dr["CCF"].coords,
+                    )
                     xx = xx.resample(times=mov_sample, label="right", skipna=True).asfreq().dropna("times", how="all")
 
                 logger.debug(f"  [timing] rolling/resample {mov_stack}: {time.time()-_t0:.2f}s  shape={xx['CCF'].shape}")

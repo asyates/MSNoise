@@ -1275,3 +1275,86 @@ def wiener_filt(data, M, N, gap_threshold):
     )
     del filtered_values
     return filtered_data
+
+
+def rolling_mean_nan(arr: "np.ndarray", window: int, min_periods: int = 1) -> "np.ndarray":
+    """O(N) NaN-aware rolling mean along axis 0 using cumulative sums.
+
+    Drop-in replacement for xarray's ``rolling(times=W).mean()`` on a 2-D
+    numpy array.  Complexity is O(N × F) regardless of *window* size —
+    unlike xarray's default implementation which is O(N × W × F) when NaN
+    handling forces a fallback from the cumsum fast-path.
+
+    :param arr:         2-D array of shape ``(T, F)`` (time × taxis).
+    :param window:      Rolling window size (number of time steps).
+    :param min_periods: Minimum number of non-NaN values required to produce
+                        a result; positions with fewer valid values yield NaN.
+    :returns:           Array of same shape and dtype as *arr*.
+    """
+    import numpy as np
+
+    T, F = arr.shape
+    valid  = ~np.isnan(arr)
+    filled = np.where(valid, arr.astype(np.float64), 0.0)
+
+    # Padded cumulative sums — index 0 is zero, index i+1 is sum of first i elements
+    cv = np.empty((T + 1, F), dtype=np.float64)
+    cc = np.empty((T + 1, F), dtype=np.float64)
+    cv[0] = 0.0
+    cc[0] = 0.0
+    np.cumsum(filled, axis=0, out=cv[1:])
+    np.cumsum(valid,  axis=0, out=cc[1:])
+
+    # For output position i the window covers [max(0, i-W+1), i]
+    i1      = np.arange(1, T + 1)
+    i0      = np.maximum(0, i1 - window)
+
+    win_val = cv[i1] - cv[i0]
+    win_cnt = cc[i1] - cc[i0]
+
+    enough  = win_cnt >= min_periods
+    result  = np.where(enough, win_val / np.where(win_cnt > 0, win_cnt, 1.0), np.nan)
+    return result.astype(arr.dtype)
+
+
+def rolling_stack(arr: "np.ndarray", window: int,
+                  stack_method: str = "linear",
+                  min_periods: int = 1,
+                  **stack_kwargs) -> "np.ndarray":
+    """Rolling stack along axis 0 using the requested stacking method.
+
+    Dispatches to the appropriate implementation:
+
+    * ``"linear"``:  :func:`rolling_mean_nan` — O(N), constant in window size.
+    * ``"pws"`` / ``"tfpws"``:  sliding-window loop calling :func:`stack`
+      — inherently O(N × W) because phase coherence is non-linear, but
+      avoids xarray overhead and skips all-NaN windows early.
+
+    :param arr:          2-D float32 array ``(T, F)`` — time × taxis.
+    :param window:       Rolling window size in time steps.
+    :param stack_method: ``"linear"``, ``"pws"``, or ``"tfpws"``.
+    :param min_periods:  Minimum valid (non-NaN) traces required; positions
+                         with fewer yield NaN.
+    :param stack_kwargs: Extra keyword arguments forwarded to :func:`stack`
+                         (``pws_timegate``, ``pws_power``, ``freqmin``, …).
+    :returns:            Array of same shape and dtype as *arr*.
+    """
+    import numpy as np
+
+    if stack_method == "linear":
+        return rolling_mean_nan(arr, window, min_periods)
+
+    T, F = arr.shape
+    result = np.full_like(arr, np.nan)
+
+    for i in range(T):
+        start = max(0, i - window + 1)
+        window_data = arr[start:i + 1]
+        # Drop whole-trace NaN rows (days with no data)
+        valid_rows = ~np.all(np.isnan(window_data), axis=1)
+        window_valid = window_data[valid_rows]
+        if len(window_valid) < min_periods:
+            continue
+        result[i] = stack(window_valid, stack_method=stack_method, **stack_kwargs)
+
+    return result
