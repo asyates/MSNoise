@@ -199,7 +199,14 @@ def main(loglevel="INFO"):
                     EM[EM > params.mwcs_dtt.dtt_maxerr] = 1.0
 
                 # Exclude values exceeding dtt_maxdtt
-                dtt_values = np.abs(M / tArray)
+                # dv/v = -dt/t; division by zero at zero-lag windows gives inf,
+                # which is immediately excluded by the dtt_maxdtt filter below.
+                # Use np.divide with where= to avoid the RuntimeWarning.
+                dtt_values = np.abs(
+                    np.divide(M, tArray,
+                              where=tArray != 0,
+                              out=np.full_like(M, np.inf))
+                )
                 row_indices, col_indices = np.where(dtt_values > params.mwcs_dtt.dtt_maxdtt)
                 EM[row_indices, col_indices]   = 1.0
                 MCOH[row_indices, col_indices] = 0.0
