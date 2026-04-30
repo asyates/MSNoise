@@ -220,8 +220,8 @@ def build_params_from_project_yaml(
 #: Glob patterns (relative to project root) for each entry level.
 #: Each pattern addresses the ``_output/`` directory of the relevant steps.
 LEVEL_GLOBS: dict[str, list[str]] = {
-    "preprocess": ["preprocess_*/_output/**"],
-    "cc":         ["preprocess_*/cc_*/_output/**"],
+    "preprocess": ["**/preprocess_*/_output/**"],
+    "cc":         ["**/preprocess_*/cc_*/filter_*/_output/**"],
     "stack":      ["**/filter_*/stack_*/_output/**",
                    "**/filter_*/refstack_*/_output/**"],
     # mwcs_* would also match mwcs_dtt_* and mwcs_dtt_dvv_* — use digit suffix
