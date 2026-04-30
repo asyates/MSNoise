@@ -188,7 +188,7 @@ def main(stype, loglevel="INFO"):
 
             all_days = sorted(set(all_days))
             excess_days = sorted(set(excess_days))
-            del days   # all_days is the authoritative list from here
+
             del gaps   # gap index only needed during build above
             del wiener_extra_days  # only needed during gap-padding build above
 
