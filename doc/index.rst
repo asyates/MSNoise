@@ -11,9 +11,9 @@ architecture that makes it easy to run the same data through multiple
 parameter branches without reprocessing from scratch.  Plugins can extend
 or replace any step.
 
-If you use MSNoise for your research, please cite:
+If you use MSNoise for your research, please cite :footcite:t:`Lecocq2014`.
 
-| **Lecocq, T., C. Caudron, et F. Brenguier (2014)**, MSNoise, a Python Package for Monitoring Seismic Velocity Changes Using Ambient Seismic Noise, *Seismological Research Letters*, 85(3), 715–726, doi:10.1785/0220130073.
+.. footbibliography::
 
 
 .. toctree::
@@ -46,8 +46,10 @@ with the exact commands at each stage.
     :caption: Using MSNoise
 
     results
+    project
+    papers
     how_tos
-    auto_examples/index
+    notebooks/index
 
 How to read and work with computed results in notebooks and scripts, plus
 recipes for common tasks and a gallery of worked examples.

@@ -2,7 +2,7 @@
 .. warning:: if using only ``mov_stack`` = 1, no MWCS jobs is inserted in the
     database and consequently, no MWCS calculation will be done! FIX!
 
-Following Clarke et al (2011), we apply the MWCS
+Following :footcite:t:`Clarke2011`, we apply the MWCS
 to study the relative dephasing between Moving-Window stacks ("Current") and a
 Reference using Moving-Window Cross-Spectral analysis. The *jobs* "T"o do have
 been inserted in the datavase during the stack procedure.
@@ -72,6 +72,9 @@ conflicts). This works both with SQLite and MySQL but be aware problems
 could occur with SQLite.
 
     Parallel Processing
+
+.. footbibliography::
+
 """
 
 import time
@@ -259,17 +262,17 @@ def main(loglevel="INFO"):
                         # Vectorized smoothing: one fftconvolve call per array
                         # instead of a Python loop over n_times rows (~1.4x faster)
                         hw = hanningwindow.real
-                        fcur2 = np.sqrt(
+                        fcur2 = np.sqrt(np.maximum(0.0,
                             scipy.signal.fftconvolve(
-                                fcur2, hw[np.newaxis, :], mode="same", axes=1))
+                                fcur2, hw[np.newaxis, :], mode="same", axes=1)))
                         if rolling_mode:
                             # fref2 is 2D (n_times, padd//2)
-                            fref2 = np.sqrt(
+                            fref2 = np.sqrt(np.maximum(0.0,
                                 scipy.signal.fftconvolve(
-                                    fref2, hw[np.newaxis, :], mode="same", axes=1))
+                                    fref2, hw[np.newaxis, :], mode="same", axes=1)))
                         else:
-                            fref2 = np.sqrt(
-                                scipy.signal.convolve(fref2, hw, "same"))
+                            fref2 = np.sqrt(np.maximum(0.0,
+                                scipy.signal.convolve(fref2, hw, "same")))
                         X = scipy.signal.fftconvolve(
                             X, hanningwindow[np.newaxis, :], mode="same", axes=1)
                     else:

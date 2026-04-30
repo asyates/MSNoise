@@ -211,27 +211,40 @@ extensions = [
     'sphinx.ext.todo',
     'sphinx.ext.graphviz',
     'numpydoc',
-    *([ 'sphinx_gallery.gen_gallery'] if _HAS_GALLERY else []),
+    'sphinxcontrib.bibtex',
+    'nbsphinx',
+    "sphinx_gallery.load_style",  # Loads gallery CSS
+    # *([ 'sphinx_gallery.gen_gallery'] if _HAS_GALLERY else []),
 ]
 
-sphinx_gallery_conf = {
-     'examples_dirs': '../examples',
-     'gallery_dirs': 'auto_examples',
-     'show_memory': False,
-     'thumbnail_size': (400, 400),
-     # Skip jupytext-format notebooks (no sphinx-gallery docstring)
-     'ignore_pattern': r'(nb_|/conf\.py)',
-     # These examples require a live MSNoise project (db.ini + data)
-     # and are expected to fail in CI without one.
-     'expected_failing_examples': [
-         '../examples/plot_ref.py',
-         '../examples/plot_interferogram.py',
-         '../examples/plot_dvv_comparison.py',
-         '../examples/plot_compute_hvsr.py',
-         '../examples/plot_compute_hvsr_psd.py',
-        '../examples/plot_cc_vs_pcc.py',
-     ],
-} if _HAS_GALLERY else {}
+nbsphinx_custom_formats = {
+    ".pct.py": ["jupytext.reads", {"fmt": "py:percent"}],
+}
+nbsphinx_allow_errors = True
+nbsphinx_execute = 'always'
+nbsphinx_execute_arguments = ["--InlineBackend.figure_formats={'svg', 'pdf'}"]
+
+bibtex_bibfiles = ['refs.bib']
+bibtex_default_style = 'plain'
+bibtex_reference_style = 'author_year'
+
+# sphinx_gallery_conf = {
+#      'examples_dirs': '../examples',
+#      'gallery_dirs': 'auto_examples',
+#      'show_memory': False,
+#      'thumbnail_size': (400, 400),
+#      # Skip jupytext-format notebooks (no sphinx-gallery docstring)
+#      'ignore_pattern': r'(nb_|/conf\.py)',
+#      # These examples require a live MSNoise project (db.ini + data)
+#      # and are expected to fail in CI without one.
+#      'expected_failing_examples': [
+#          '../examples/plot_ref.py',
+#          '../examples/plot_interferogram.py',
+#          '../examples/plot_dvv_comparison.py',
+#          '../examples/plot_compute_hvsr.py',
+#          '../examples/plot_compute_hvsr_psd.py',
+#      ],
+# } if _HAS_GALLERY else {}
 intersphinx_cache_limit = 5
 
 math_number_all = False
@@ -262,6 +275,8 @@ def _find_dot() -> str:
     return "dot"   # fallback: let Sphinx emit its own error
 
 graphviz_dot = _find_dot()
+import sys
+sys.path.append(os.path.dirname(graphviz_dot))
 graphviz_output_format = 'svg'   # resolution-independent; renders sharply at any zoom
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['.templates']

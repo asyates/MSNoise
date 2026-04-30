@@ -30,8 +30,8 @@ configuration parameters: ``cc_type`` (inter-station CC),
 Cross-Correlation (CC)
 ----------------------
 
-The classic ambient-noise cross-correlation (Shapiro & Campillo 2004;
-Bensen et al. 2007) is computed using the tiled-batch implementation
+The classic ambient-noise cross-correlation (:footcite:t:`ShapiroCampillo2004`;
+:footcite:t:`Bensen2007`) is computed using the tiled-batch implementation
 :func:`~msnoise.core.compute.myCorr2`.
 
 **Shared pre-processing per time window** (CC and SC modes — NOT AC):
@@ -87,32 +87,21 @@ The IFFT, folding and optional normalisation follow in all cases:
 product of RMS energies :math:`(e_i \cdot e_j)`; ``MAX`` — divide by
 the CCF maximum; ``ABSMAX`` — divide by the absolute maximum.
 
-**References**
+.. rubric:: References
 
-Bensen, G. D., Ritzwoller, M. H., Barmin, M. P., Levshin, A. L., Lin, F.,
-Moschetti, M. P., Shapiro, N. M., & Yang, Y. (2007).
-Processing seismic ambient noise data to obtain reliable broad-band surface
-wave dispersion measurements.
-*Geophysical Journal International*, 169(3), 1239–1260.
-https://doi.org/10.1111/j.1365-246X.2007.03374.x
-
-Shapiro, N. M., & Campillo, M. (2004).
-Emergence of broadband Rayleigh waves from correlations of the ambient
-seismic noise.
-*Geophysical Research Letters*, 31(7), L07614.
-https://doi.org/10.1029/2004GL019491
+.. footcite:p:`ShapiroCampillo2004,Bensen2007`
 
 
 Phase Cross-Correlation (PCC2)
 ------------------------------
 
-Phase Cross-Correlation (Schimmel 1999; Schimmel et al. 2011) is an
+Phase Cross-Correlation (:footcite:t:`Schimmel1999`; :footcite:t:`Schimmel2011`) is an
 alternative to the classic GNCC that discards amplitude information entirely
 at every sample, making it intrinsically robust against transient noise
 (earthquakes, instrumental glitches) *without* requiring explicit temporal
 normalisation such as one-bit or clipping.  MSNoise implements PCC version 2
-(PCC2), the FFT-accelerated formulation introduced by Ventosa et al. (2019,
-2023) as part of the FastPCC package.  The implementation is self-contained
+(PCC2), the FFT-accelerated formulation introduced by :footcite:t:`Ventosa2019` and
+:footcite:t:`Ventosa2023` as part of the FastPCC package.  The implementation is self-contained
 in :func:`~msnoise.core.compute.pcc_xcorr` and does **not** depend on the
 ``phasecorr`` or ``fastpcc`` external packages.
 
@@ -165,28 +154,79 @@ For each trace the shared ``_data_bp`` (already bandpassed to
 6. **Normalisation** — ``MAX`` or ``ABSMAX`` as for CC; ``POW`` is silently
    ignored because amplitudes are discarded in step 2.
 
-**References**
+.. rubric:: References
 
-Schimmel, M. (1999).
-Phase cross-correlations: design, comparisons, and applications.
-*Bulletin of the Seismological Society of America*, 89(5), 1366–1378.
-https://doi.org/10.1785/BSSA0890051366
+.. footcite:p:`Schimmel1999,Schimmel2011,Ventosa2019,Ventosa2023`
 
-Schimmel, M., Stutzmann, E., & Gallart, J. (2011).
-Using instantaneous phase coherence for signal extraction from ambient noise
-data at a local to a global scale.
-*Geophysical Journal International*, 184(1), 494–506.
-https://doi.org/10.1111/j.1365-246X.2010.04861.x
 
-Ventosa, S., Schimmel, M., & Stutzmann, E. (2019).
-Towards the processing of large data volumes with phase cross-correlation.
-*Seismological Research Letters*, 90(4), 1663–1669.
-https://doi.org/10.1785/0220190022
+Same-Station Cross-Component (SC)
+----------------------------------
 
-Ventosa, S., & Schimmel, M. (2023).
-FastPCC: Fast phase cross-correlation algorithm for large seismic datasets.
-*IEEE Transactions on Geoscience and Remote Sensing*, 61, 1–17.
-https://doi.org/10.1109/TGRS.2023.3294302
+When ``components_to_compute_single_station`` contains cross-component pairs
+(e.g. ``ZN``, ``ZE``, ``NE``) with station indices :math:`i = j` but different
+component indices, MSNoise computes the cross-correlation between two components
+of the same sensor.  SC was introduced for seismic monitoring by
+:footcite:t:`DePlaen2016`, who showed it outperforms inter-station CC when only
+a single broadband station is available:
+
+.. math::
+
+    C_{i\alpha, i\beta}(\tau) = \int_{-\infty}^{\infty}
+        d_{i\alpha}(t)\, d_{i\beta}(t + \tau)\, dt,
+        \qquad \alpha \neq \beta
+
+where :math:`\alpha, \beta \in \{Z, N, E\}` are distinct component labels at
+the same station :math:`i`.  The SC function reconstructs an approximation to
+the Green's function between two virtual sensors co-located at the same site
+but oriented differently, making it sensitive to surface-wave velocity changes
+in the shallow crust.
+
+The algorithm (CC or PCC2) is selected independently via
+``cc_type_single_station_SC``.
+
+.. rubric:: References
+
+.. footcite:p:`DePlaen2016`
+
+
+
+Auto-Correlation (AC)
+---------------------
+
+When ``components_to_compute_single_station`` includes same-component pairs
+(e.g. ``ZZ``) and station indices satisfy :math:`i = j`, MSNoise computes
+the zero-offset autocorrelation function (ACF).  The ACF is the
+zero-lag cross-correlation of a trace with a time-delayed copy of itself:
+
+.. math::
+
+    C_{ii}(\tau) = \int_{-\infty}^{\infty}
+        d_i(t)\, d_i(t + \tau)\, dt
+
+which is equivalent to the inverse Fourier transform of the power spectrum
+:math:`|X_i(\nu)|^2`.  The ACF provides a *zero-offset reflection response*
+beneath the station — the same signal that would be recorded if the station
+were both source and receiver (:footcite:t:`Romero2018`).  AC was used for
+volcano monitoring alongside SC by :footcite:t:`DePlaen2016`, and the
+combination of AC with PCC was demonstrated at Mt. Etna by
+:footcite:t:`DePlaen2019`.
+
+The algorithm (CC or PCC2) is selected independently for AC via
+``cc_type_single_station_AC``.  PCC2 is strongly recommended for AC because
+it suppresses the zero-lag spike inherent to the classical autocorrelogram
+and is insensitive to amplitude transients without requiring explicit
+temporal normalisation.
+
+.. note::
+
+    Spectral whitening must **not** be applied before AC (set
+    ``whitening = N`` when ``cc_type_single_station_AC = PCC``). Whitening
+    before autocorrelation collapses the ACF to a sinc function, destroying
+    all structural information.
+
+.. rubric:: References
+
+.. footcite:p:`DePlaen2016,DePlaen2019,Romero2018`
 
 
 Stacking daily windows
@@ -195,20 +235,17 @@ Stacking daily windows
 For each ``corr_duration``-long window, and for each configured filter, the
 CCF (CC or PCC2) is computed and accumulated.  If ``keep_all = Y`` the
 individual window CCFs are written to disk.  By default (``keep_days = Y``),
-all windows for the day are stacked into a single daily CCF using either a
-linear mean or Phase-Weighted Stack (PWS; Schimmel & Paulssen 1997):
+all windows for the day are stacked into a single daily CCF using
+``linear``, ``pws`` (:footcite:t:`Schimmel1997`), or ``tfpws``
+(:footcite:t:`Schimmel2007`) — controlled by ``stack_method``.
 
 .. note::
 
-    PWS is provided as an experimental option.  It has not been
-    systematically cross-validated.  Use with caution.
+    PWS and tf-PWS are provided as experimental options.  They have not been
+    systematically cross-validated for CC/PCC daily stacking.  Use with caution.
 
-Schimmel, M., & Paulssen, H. (1997).
-Noise reduction and detection of weak, coherent signals through
-phase-weighted stacks.
-*Geophysical Journal International*, 130(2), 497–505.
-https://doi.org/10.1111/j.1365-246X.1997.tb05664.x
 
+.. footbibliography::
 
 Configuration Parameters
 ------------------------
@@ -554,6 +591,7 @@ import scipy.signal
 import scipy.fft as sf
 from scipy.fft import next_fast_len
 from obspy.signal.filter import bandpass
+from scipy.signal import iirfilter as _iirfilter, zpk2sos as _zpk2sos, sosfilt as _sosfilt
 
 
 def main(loglevel="INFO", chunk_size=0):
@@ -602,6 +640,22 @@ def main(loglevel="INFO", chunk_size=0):
         filters = []
         for filter in filter_steps:
             filters.append([filter.step_name, get_config_set_details(db, filter.category, filter.set_number, format='AttribDict')])
+        # Lookup dict for tfpws: filter_name -> (freqmin, freqmax)
+        filter_freq = {name: (float(f.freqmin), float(f.freqmax)) for name, f in filters}
+        # Pre-compute bandpass SOS coefficients once per filter — avoids
+        # repeated iirfilter+zpk2sos design (constant per day) inside the
+        # window loop.  sosfilt(sos, data, axis=1) then vectorises across
+        # all stations in one C-level call instead of N Python calls.
+        _fs = params.cc.cc_sampling_rate
+        _filter_sos = {
+            fn: _zpk2sos(*_iirfilter(
+                8,
+                [2.0 * float(fcfg.freqmin) / _fs,
+                 2.0 * float(fcfg.freqmax) / _fs],
+                btype='band', ftype='butter', output='zpk'
+            ))
+            for fn, fcfg in filters
+        }
         logger.info("New CC Job: %s (%i pairs with %i stations)" %
                      (goal_day, len(pairs), len(stations)))
         jt = time.time()
@@ -693,8 +747,7 @@ def main(loglevel="INFO", chunk_size=0):
             taper = np.hstack(
                 (taper_sides[:wlen], np.ones(data.shape[1] - 2 * wlen),
                  taper_sides[len(taper_sides) - wlen:]))
-            for i in range(data.shape[0]):
-                data[i] *= taper
+            data *= taper   # broadcast: (n_stations, N) * (N,)
             # index net.sta comps for energy later
             channel_index = {}
             if params.cc.whitening != "N" and params.cc.whitening_type == "PSD":
@@ -737,10 +790,12 @@ def main(loglevel="INFO", chunk_size=0):
             tmptime = tmp[0].stats.endtime.datetime
             thistime = tmptime.strftime("%Y-%m-%d %H:%M:%S")
 
-            for filter_name, filter in filters:
-                # logger.debug("Processing filter %s" % filter_name)
-                # print(filter)
+            # freq_vec depends only on nfft/dt — constant across filters.
+            freq_vec = sf.fftfreq(nfft, d=dt)[:nfft // 2]
+            # O(1) station index lookup — replaces O(n_stations) names.index()
+            names_idx = {tuple(n): i for i, n in enumerate(names)}
 
+            for filter_name, filter in filters:
                 # Standard operator for CC
                 cc_index = []
                 if filter.CC:
@@ -757,7 +812,7 @@ def main(loglevel="INFO", chunk_size=0):
                             if comp in params.cc.components_to_compute:
                                 cc_index.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp),
-                                    names.index(sta1), names.index(sta2)])
+                                    names_idx[tuple(sta1)], names_idx[tuple(sta2)]])
 
                 # Different iterator func for single station AC or SC:
                 single_station_pair_index_sc = []
@@ -777,20 +832,20 @@ def main(loglevel="INFO", chunk_size=0):
                             if filter.AC and c1[-1] == c2[-1]:
                                 single_station_pair_index_ac.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp),
-                                    names.index(sta1), names.index(sta2)])
+                                    names_idx[tuple(sta1)], names_idx[tuple(sta2)]])
                             elif filter.SC:
                             # If the components are different, we can just
                             # process them using the default CC code (should warn)
                                 single_station_pair_index_sc.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp),
-                                    names.index(sta1), names.index(sta2)])
+                                    names_idx[tuple(sta1)], names_idx[tuple(sta2)]])
                         if comp[::-1] in params.cc.components_to_compute_single_station:
                             if filter.SC and c1[-1] != c2[-1]:
                                 # If the components are different, we can just
                                 # process them using the default CC code (should warn)
                                 single_station_pair_index_sc.append(
                                     ["%s.%s.%s_%s.%s.%s_%s" % (n1, s1, l1, n2, s2, l2, comp[::-1]),
-                                    names.index(sta2), names.index(sta1)])
+                                    names_idx[tuple(sta2)], names_idx[tuple(sta1)]])
 
                 # logger.debug("CC index: %s" % cc_index)
                 # logger.debug("single station AC: ", single_station_pair_index_ac)
@@ -799,7 +854,6 @@ def main(loglevel="INFO", chunk_size=0):
                 filterlow = float(filter.freqmin)
                 filterhigh = float(filter.freqmax)
                 # logger.debug("Filter: %s - %s Hz" % (filterlow, filterhigh))
-                freq_vec = sf.fftfreq(nfft, d=dt)[:nfft // 2]
                 freq_sel = np.where((freq_vec >= filterlow) & (freq_vec <= filterhigh))[0]
                 low = freq_sel[0] - napod
                 if low <= 0:
@@ -817,12 +871,13 @@ def main(loglevel="INFO", chunk_size=0):
                 # the spectral window itself, so no prior bandpass is needed).
                 # For PCC and AC: _data_bp is the starting point.
                 # For CC+no-whiten: _data_bp is used directly.
-                _data_raw = data.copy()
-                _data_bp = np.array([
-                    bandpass(tr, freqmin=filterlow, freqmax=filterhigh,
-                             df=params.cc.cc_sampling_rate, corners=8)
-                    for tr in _data_raw
-                ])
+                # No copy needed — data is never modified in the filter loop
+                # (whiten2 and winsorizing operate on ffts, not on data/_data_raw).
+                _data_raw = data
+                # Vectorized bandpass: one sosfilt call on (n_stations, N)
+                # instead of N individual bandpass() calls, each of which
+                # re-runs iirfilter+zpk2sos. SOS coefficients pre-computed above.
+                _data_bp = _sosfilt(_filter_sos[filter_name], data, axis=1)
 
                 # ── Auto-Correlation (AC) ─────────────────────────────────
                 # Whitening must NOT be applied before AC: spectral whitening
@@ -1016,8 +1071,11 @@ def main(loglevel="INFO", chunk_size=0):
                 if not len(corrs):
                     logger.debug("No data to stack.")
                     continue
+                fmin, fmax = filter_freq.get(filter_name, (1.0, params.cc.cc_sampling_rate / 2))
                 corr = stack(corrs, params.cc.stack_method, params.cc.pws_timegate,
-                             params.cc.pws_power, params.cc.cc_sampling_rate)
+                             params.cc.pws_power, params.cc.cc_sampling_rate,
+                             freqmin=fmin, freqmax=fmax,
+                             tfpws_nscales=params.cc.tfpws_nscales)
                 if not len(corr):
                     logger.debug("No data to save.")
                     continue

@@ -67,7 +67,8 @@ import pandas as pd
 
 from .core.db import connect, get_logger
 from .core.workflow import (build_ref_datelist, get_next_lineage_batch, get_t_axis, is_next_job_for_step, massive_update_job, propagate_downstream, refstack_is_rolling, refstack_needs_recompute)
-from .core.signal import validate_stack_data
+import xarray as xr
+from .core.signal import validate_stack_data, stack as _stack
 from .core.io import xr_load_ccf_for_stack, xr_save_ref
 from .core.signal import wiener_filt
 
@@ -209,11 +210,23 @@ def main(loglevel="INFO"):
             if wienerfilt:
                 c = wiener_filt(c, wiener_M, wiener_N, gap_threshold)
 
-            # c is a Dataset with variable "CCF" (dims: times, taxis)
-            # mean over times → Dataset with variable "CCF" (dim: taxis)
-            # xr_save_ref expects a "REF"-named DataArray/Dataset,
-            # so extract and rename before saving.
-            ref_stack = c["CCF"].mean(dim="times").rename("REF")
+            # Dispatch to stack() — handles linear / pws / tfpws.
+            # freqmin/freqmax from the parent filter configset (params.filter)
+            # are passed for tfpws; ignored by linear/pws.
+            ref_array = _stack(
+                c["CCF"].values,
+                stack_method=params.refstack.stack_method,
+                pws_timegate=params.refstack.pws_timegate,
+                pws_power=params.refstack.pws_power,
+                goal_sampling_rate=params.cc.cc_sampling_rate,
+                freqmin=params.filter.freqmin,
+                freqmax=params.filter.freqmax,
+                tfpws_nscales=params.refstack.tfpws_nscales,
+            )
+            del c  # full CCF dataset no longer needed — free before next component
+            ref_stack = xr.DataArray(
+                ref_array, dims=["taxis"], coords={"taxis": taxis},
+            ).rename("REF")
 
             xr_save_ref(
                 params.global_.output_folder,

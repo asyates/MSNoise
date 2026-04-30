@@ -7,6 +7,7 @@ __all__ = [
     "get_data_availability",
     "get_data_source",
     "get_default_data_source",
+    "distance_from_coords",
     "get_interstation_distance",
     "get_new_files",
     "get_station",
@@ -222,6 +223,29 @@ def check_stations_uniqueness(session, station):
 
 
 
+def distance_from_coords(x1, y1, x2, y2, coordinates="DEG"):
+    """Compute interstation distance in km from raw coordinate values.
+
+    Pure function — no ORM objects required.  Used internally by
+    :func:`get_interstation_distance` and by :meth:`MSNoiseResult.get_distance`
+    in DB-free archive mode.
+
+    :param x1: Longitude (DEG) or Easting (UTM) of station 1.
+    :param y1: Latitude  (DEG) or Northing (UTM) of station 1.
+    :param x2: Longitude (DEG) or Easting (UTM) of station 2.
+    :param y2: Latitude  (DEG) or Northing (UTM) of station 2.
+    :param coordinates: ``"DEG"`` for WGS-84 lat/lon, ``"UTM"`` for metres.
+    :returns: Distance in kilometres.
+    :rtype: float
+    """
+    if coordinates == "DEG":
+        from obspy.geodetics import gps2dist_azimuth
+        dist, _, _ = gps2dist_azimuth(y1, x1, y2, x2)
+        return dist / 1e3
+    else:
+        return np.hypot(float(x2 - x1), float(y2 - y1)) / 1e3
+
+
 def get_interstation_distance(station1, station2, coordinates="DEG"):
     """Returns the distance in km between `station1` and `station2`.
 
@@ -238,15 +262,9 @@ def get_interstation_distance(station1, station2, coordinates="DEG"):
     :rtype: float
     :returns: The interstation distance in km
     """
-    from obspy.geodetics import gps2dist_azimuth
-    if coordinates == "DEG":
-        dist, azim, bazim = gps2dist_azimuth(station1.Y, station1.X,
-                                             station2.Y, station2.X)
-        return dist / 1.e3
-    else:
-        dist = np.hypot(float(station1.X - station2.X),
-                        float(station1.Y - station2.Y)) / 1.e3
-        return dist
+    return distance_from_coords(
+        station1.X, station1.Y, station2.X, station2.Y, coordinates
+    )
 
 # ============================================================
 

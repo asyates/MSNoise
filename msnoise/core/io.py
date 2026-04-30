@@ -93,8 +93,11 @@ def _trim(data, dttname, limits=0.1):
 def _xr_create_or_open(fn, taxis=[], name="CCF", lazy=False):
     """Open an existing NetCDF file or create an empty template Dataset.
 
-    For **write** paths (``lazy=False``): loads the full file into memory so
-    the handle is released before ``_xr_save_and_close`` rewrites it.
+    For **write** paths (``lazy=False``): loads the full file into memory and
+    explicitly closes the file handle so xarray's ``CachingFileManager`` LRU
+    cache does not retain an open read descriptor.  On GPFS an open read
+    handle blocks the subsequent ``_xr_save_and_close`` write token, causing
+    a spurious ``PermissionError`` even on files owned by the same process.
 
     For **read** paths (``lazy=True``): returns a lazily memory-mapped Dataset.
 
@@ -107,7 +110,13 @@ def _xr_create_or_open(fn, taxis=[], name="CCF", lazy=False):
         try:
             if lazy:
                 return xr.open_dataset(fn)
-            return xr.load_dataset(fn)
+            # Use a context manager so xarray closes the file handle
+            # (including any LRU-cached descriptor) before we return the
+            # in-memory dataset.  Without explicit close, the CachingFileManager
+            # keeps the handle open; on GPFS that blocks the write token needed
+            # by _xr_save_and_close, causing PermissionError on the same node.
+            with xr.open_dataset(fn) as ds:
+                return ds.load()
         except (ValueError, OverflowError, OSError) as e:
             # File exists but is corrupt or has time values outside the range
             # supported by the current xarray/pandas version (e.g. INT64_MIN
@@ -193,9 +202,21 @@ def _xr_insert_or_update(dataset, new):
 
 def _xr_save_and_close(dataset, fn, encoding=None):
     """Write *dataset* to *fn* with float32+zlib encoding by default."""
+    import time
     os.makedirs(os.path.dirname(fn), exist_ok=True)
     enc = encoding if encoding is not None else _f32_encoding(dataset)
-    dataset.to_netcdf(fn, mode="w", encoding=enc, engine="netcdf4")
+    # On GPFS, creating a new file in a directory whose write token is held
+    # by another client (e.g. another worker that just created the dir or
+    # another file in it) raises PermissionError.  Retry with backoff until
+    # the token is released — typically within a second.
+    for _attempt in range(8):
+        try:
+            dataset.to_netcdf(fn, mode="w", encoding=enc, engine="netcdf4")
+            break
+        except PermissionError:
+            if _attempt == 7:
+                raise
+            time.sleep(0.3 * (1 + _attempt))
     dataset.close()
     del dataset
 
@@ -363,6 +384,10 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
 
         <root> / *cc_lineage / filter_step / _output / all|daily / <comp> / <sta1>_<sta2> / <date>.nc
 
+    Data are stored internally as **float32** to halve the working-set size
+    relative to the float64 values written by s03.  Precision loss is negligible
+    for the rolling-mean operations performed by the stack worker.
+
     :param root: Output folder (``params.global_.output_folder``).
     :param lineage_names: Full lineage name list including the filter step,
         e.g. ``["preprocess_1", "cc_1", "filter_1", "stack_1"]``.
@@ -373,6 +398,9 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
     :returns: :class:`xarray.Dataset` with variable ``CCF`` and dims
         ``(times, taxis)``, sorted by ``times``.  Empty Dataset if no data found.
     """
+    import logging
+    import numpy as np
+
     # Derive cc_lineage and filter_step from lineage_names
     cc_idx = next(
         (i for i, n in enumerate(lineage_names) if n.startswith("cc_")), None
@@ -382,17 +410,32 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
     cc_lineage = lineage_names[:cc_idx + 1]   # e.g. ['preprocess_1', 'cc_1']
     filter_step = lineage_names[cc_idx + 1]   # e.g. 'filter_1'
 
-    das = []
+    # Collect raw numpy arrays + timestamps to avoid the double-copy that
+    # xr.concat causes (das list + combined array both live simultaneously).
+    # Each DataArray is deleted immediately after value extraction.
+    times_list = []   # list of 1-D numpy datetime64 arrays
+    data_list  = []   # list of 2-D numpy float32 arrays (n_windows, n_taxis)
+    taxis_vals = None
+
     for date in dates:
         date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
         try:
             da = xr_get_ccf_all(root, cc_lineage, filter_step,
                                 station1, station2, components, date_str)
-            das.append(da)
+            if taxis_vals is None:
+                taxis_vals = da.coords["taxis"].values.copy()
+            times_list.append(da.coords["times"].values)
+            data_list.append(da.values.astype(np.float32))
+            del da   # free float64 DataArray — numpy copy is all we need
         except FileNotFoundError:
             pass
+        except OSError as e:
+            logging.getLogger("msnoise.io").warning(
+                f"Skipping corrupt CCF file for {station1}/{station2} "
+                f"{components} {date_str}: {e}"
+            )
 
-    if not das:
+    if not times_list:
         # Fallback: daily stacks from keep_days (xr_save_ccf_daily)
         for date in dates:
             date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
@@ -401,14 +444,115 @@ def xr_load_ccf_for_stack(root, lineage_names, station1, station2, components, d
                                       station1, station2, components, date_str)
                 t = pd.Timestamp(date_str)
                 da = da.expand_dims({"times": [t]})
-                das.append(da)
+                if taxis_vals is None:
+                    taxis_vals = da.coords["taxis"].values.copy()
+                times_list.append(da.coords["times"].values)
+                data_list.append(da.values.astype(np.float32))
+                del da
             except FileNotFoundError:
                 pass
+            except OSError as e:
+                logging.getLogger("msnoise.io").warning(
+                    f"Skipping corrupt daily CCF for {station1}/{station2} "
+                    f"{components} {date_str}: {e}"
+                )
 
-    if not das:
+    if not times_list:
         return xr.Dataset()
-    combined = xr.concat(das, dim="times").sortby("times")
-    return combined.to_dataset(name="CCF")
+
+    # Single numpy concatenation — peak RAM here is:
+    #   data_list (N × float32) + combined (N × float32) = 2 × N × float32
+    # = 1 × N × float64 (vs 2 × N × float64 with xr.concat)
+    all_times = np.concatenate(times_list)
+    del times_list
+    all_data = np.concatenate(data_list, axis=0)
+    del data_list
+
+    # Sort by time (stable to preserve intra-day window order)
+    order = np.argsort(all_times, kind="stable")
+    all_times = all_times[order]
+    all_data  = all_data[order]
+    del order
+
+    return xr.Dataset(
+        {"CCF": (["times", "taxis"], all_data)},
+        coords={"times": all_times, "taxis": taxis_vals},
+    )
+
+
+def xr_open_ccf_mfdataset(root, lineage_names, station1, station2, components, dates,
+                           chunk_size: int = 240):
+    """Open per-day CCF files as a **lazy, dask-backed** Dataset.
+
+    Unlike :func:`xr_load_ccf_for_stack`, no data is loaded into RAM until an
+    operation explicitly requests it.  Peak memory is proportional to the
+    rolling-window size rather than the full time series length.
+
+    Only the ``keep_all`` (per-window) path is supported.  Returns ``None``
+    when dask is not installed or no ``keep_all`` files exist — the caller
+    should fall back to :func:`xr_load_ccf_for_stack`.
+
+    :param root:          Output folder (``params.global_.output_folder``).
+    :param lineage_names: Full lineage including the filter step.
+    :param station1:      First station SEED id.
+    :param station2:      Second station SEED id.
+    :param components:    Component pair string e.g. ``"ZZ"``.
+    :param dates:         Iterable of dates or ISO strings.
+    :param chunk_size:    Dask chunk size along the ``times`` dimension.
+                          Larger chunks mean fewer dask tasks and lower
+                          scheduler overhead.  Default 240 ≈ 10 days of
+                          hourly windows; reduce if RAM is very tight.
+    :returns:             Lazy :class:`xarray.Dataset` with ``CCF`` variable
+                          and dims ``(times, taxis)``, or ``None`` if lazy
+                          loading is unavailable.
+    """
+    try:
+        import dask  # noqa: F401
+    except ImportError:
+        return None
+
+    cc_idx = next(
+        (i for i, n in enumerate(lineage_names) if n.startswith("cc_")), None
+    )
+    if cc_idx is None or cc_idx + 1 >= len(lineage_names):
+        return None
+    cc_lineage = lineage_names[:cc_idx + 1]
+    filter_step = lineage_names[cc_idx + 1]
+
+    paths = []
+    for date in dates:
+        date_str = date if isinstance(date, str) else date.strftime('%Y-%m-%d')
+        fn = os.path.join(root, *cc_lineage, filter_step, "_output",
+                          "all", components,
+                          f"{station1}_{station2}", f"{date_str}.nc")
+        if os.path.isfile(fn):
+            paths.append(fn)
+
+    if not paths:
+        return None
+
+    try:
+        ds = xr.open_mfdataset(
+            paths,
+            concat_dim="times",
+            combine="nested",
+            data_vars="minimal",   # read non-concat variables from first file only
+            coords="minimal",      # trust first file's coords; skip cross-file checks
+            compat="override",     # skip per-file compatibility validation
+            chunks={"times": chunk_size},
+            engine="netcdf4",
+        )
+        # open_mfdataset chunks at file boundaries regardless of chunk_size;
+        # rechunk explicitly to consolidate N files into larger dask tasks.
+        ds = ds.chunk({"times": chunk_size})
+        if "CCF" not in ds and len(ds.data_vars) == 1:
+            ds = ds.rename({next(iter(ds.data_vars)): "CCF"})
+        return ds
+    except Exception as exc:
+        logging.getLogger("msnoise.io").debug(
+            f"open_mfdataset failed for {station1}/{station2} {components}: {exc}"
+        )
+        return None
 
 
 # ── MWCS ────────────────────────────────────────────────────

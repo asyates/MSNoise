@@ -1,7 +1,8 @@
 """
 Compute per-frequency-band RMS from PSD NetCDF files.
 
-Reads the per-day PSD NetCDF files written by :mod:`msnoise.s20_psd_compute`,
+Reads the PPSD-based (:footcite:t:`McNamara2004`) per-day PSD NetCDF
+files written by :mod:`msnoise.s20_psd_compute`,
 concatenates all requested days for each station-channel, and for each
 configured frequency band computes the **RMS amplitude in displacement,
 velocity, or acceleration** (controlled by ``|psd_rms.psd_rms_type|``).
@@ -43,6 +44,8 @@ Configuration Parameters
 * |psd_rms.psd_rms_type|
 * |psd.psd_components|
 
+
+.. footbibliography::
 """
 
 import time

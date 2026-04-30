@@ -141,15 +141,20 @@ def info_folders(db):
     click.echo('')
     click.echo('Configuration:')
 
-    from ..core.stations import get_default_data_source
-    _ds = get_default_data_source(db)
-    data_folder = _ds.uri or ""
-    if data_folder and os.path.isdir(data_folder):
-        click.echo(" - DataSource '%s': %s exists" % (_ds.name, data_folder))
-    elif data_folder:
-        click.secho(" - DataSource '%s': %s does not exist !" % (_ds.name, data_folder), fg='red')
-    else:
-        click.secho(" - DataSource '%s': no URI configured" % _ds.name, fg='yellow')
+    from ..msnoise_table_def import DataSource
+    all_ds = db.query(DataSource).order_by(DataSource.ref).all()
+    for _ds in all_ds:
+        data_folder = _ds.uri or ""
+        if data_folder and data_folder.startswith("fdsn://"):
+            click.echo(" - DataSource '%s': FDSN → %s" % (_ds.name, data_folder[7:]))
+        elif data_folder and data_folder.startswith("eida://"):
+            click.echo(" - DataSource '%s': EIDA → %s" % (_ds.name, data_folder[7:]))
+        elif data_folder and os.path.isdir(data_folder):
+            click.echo(" - DataSource '%s': %s exists" % (_ds.name, data_folder))
+        elif data_folder:
+            click.secho(" - DataSource '%s': %s does not exist !" % (_ds.name, data_folder), fg='red')
+        else:
+            click.secho(" - DataSource '%s': no URI configured" % _ds.name, fg='yellow')
 
     output_folder = get_config(db, "output_folder")
     if os.path.isdir(output_folder):
@@ -292,13 +297,107 @@ def db():
 @click.option('--auto-workflow', is_flag=True, default=False,
               help='Automatically create all default config sets, workflow steps and links '
                    'without prompting.')
-def db_init(tech, auto_workflow):
+@click.option('--from-yaml', 'from_yaml', default=None, metavar='PATH',
+              help='Seed config sets and links from a project YAML (category_N + after keys).')
+@click.option('--yes', '-y', is_flag=True, default=False,
+              help='Skip interactive prompts, accepting all defaults (e.g. auto-create jobs).')
+def db_init(tech, auto_workflow, from_yaml, yes):
     """This command initializes the current folder to be a MSNoise Project
     by creating a database and a db.ini file."""
     click.echo('Launching the init')
     from ..s00_installer import main
     result = main(tech)
     if result != 0:
+        return
+
+    if from_yaml:
+        import os
+        import datetime
+        if not os.path.isfile(from_yaml):
+            click.echo(f"Error: {from_yaml!r} not found.", err=True)
+            return
+        click.echo(f'\nSeeding project config from {from_yaml!r}...')
+        from ..core.db import connect
+        from ..core.config import create_project_from_yaml, get_config
+        from ..core.fdsn import is_remote_source
+        from ..msnoise_table_def import DataSource, Station
+        from ..core.stations import resolve_data_source, get_stations
+        from ..core.workflow import get_workflow_steps
+        from ..s02_new_jobs import update_job
+        db = connect()
+        try:
+            created, warnings = create_project_from_yaml(db, from_yaml)
+        except ValueError as e:
+            click.echo(f"Error: {e}", err=True)
+            db.close()
+            return
+        click.echo(f'Created: {", ".join(created)}')
+        for w in warnings:
+            click.echo(f'Warning: {w}', err=True)
+        click.echo('Setup complete!' if not warnings
+                   else 'Setup complete (with warnings — check links in admin UI).')
+
+        _DEFAULT_START, _DEFAULT_END = "1970-01-01", "2100-01-01"
+        startdate = get_config(db, "startdate")
+        enddate   = get_config(db, "enddate")
+        all_ds = db.query(DataSource).all()
+        remote_ds = [d for d in all_ds if is_remote_source(d.uri or "")]
+        if remote_ds:
+            ds_names = ", ".join(d.name for d in remote_ds)
+            click.echo(f"\nDataSource(s) '{ds_names}' use remote FDSN/EIDA.")
+            if startdate == _DEFAULT_START or enddate == _DEFAULT_END:
+                click.echo(
+                    "  ⚠  startdate/enddate are still at default values "
+                    f"({startdate} → {enddate}).\n"
+                    "  Set them in your project.yaml or via `msnoise config set` "
+                    "before downloading or creating jobs.",
+                    err=True,
+                )
+            else:
+                click.echo("  How would you like to proceed?")
+                click.echo("  [1] Bulk download first  — fetch all raw waveforms into SDS, then run pipeline")
+                click.echo("  [2] Stream from FDSN     — preprocess fetches on-the-fly (creates jobs now)")
+                click.echo("  [3] Skip                 — I'll handle it manually")
+                choice = click.prompt("Choice", type=click.Choice(["1", "2", "3"]),
+                                      default="1", show_default=True)
+
+                if choice == "1":
+                    click.echo("\n  Next steps:")
+                    click.echo(f"    msnoise utils download          # fetch raw waveforms into SDS")
+                    click.echo(f"    msnoise scan_archive            # populate data availability")
+                    click.echo(f"    msnoise utils run_workflow      # run full pipeline")
+
+                elif choice == "2":
+                    pre_steps = [s for s in get_workflow_steps(db)
+                                 if s.category == "preprocess"]
+                    if not pre_steps:
+                        click.echo("  No preprocess step found — skipping job creation.", err=True)
+                    else:
+                        pre_step = pre_steps[0]
+                        start = datetime.date.fromisoformat(startdate)
+                        end   = datetime.date.fromisoformat(enddate)
+                        dates, cur = [], start
+                        while cur <= end:
+                            dates.append(cur.isoformat())
+                            cur += datetime.timedelta(days=1)
+                        from ..core.workflow import massive_insert_job
+                        now = datetime.datetime.utcnow()
+                        jobs = [
+                            {"day": day, "pair": f"{sta.net}.{sta.sta}.{loc}",
+                             "jobtype": pre_step.step_name, "flag": "T",
+                             "step_id": pre_step.step_id,
+                             "lineage": pre_step.step_name, "lastmod": now}
+                            for day in dates
+                            for sta in get_stations(db, all=False)
+                            for loc in (sta.locs() or [""])
+                        ]
+                        massive_insert_job(db, jobs)
+                        n = len(jobs)
+                        click.echo(f"  Created {n} preprocess job(s) over {len(dates)} day(s).")
+                        click.echo(f"\n  Next step:")
+                        click.echo(f"    msnoise utils run_workflow")
+
+        db.close()
         return
 
     if auto_workflow or click.confirm(
@@ -549,6 +648,24 @@ def db_clean_duplicates():
     db.execute(text(query))
     db.commit()
     db.close()
+
+
+@db.command(name="export-yaml")
+@click.argument("output", default="project.yaml", metavar="PATH")
+@click.option("--all-values", is_flag=True, default=False,
+              help="Write every config key, not just non-default values.")
+def db_export_yaml(output, all_values):
+    """Export the current project config to a project YAML file.
+
+    The output can be re-applied to a fresh DB with:
+    msnoise db init --from-yaml PATH
+    """
+    from ..core.db import connect
+    from ..core.config import export_project_to_yaml
+    db = connect()
+    path = export_project_to_yaml(db, output, only_non_defaults=not all_values)
+    db.close()
+    click.echo(f"Project exported to {path!r}")
 
 
 @db.command(name="dump")
@@ -2752,8 +2869,15 @@ def utils_run_workflow(ctx, threads, hpc, from_category, until_category,
     msnoise_exe = [_msnoise_bin]
 
     def _step_argv(step):
-        """Full argv for a RunStep.  -t N is a top-level msnoise flag."""
-        base = msnoise_exe + (["-t", str(threads)] if threads != 1 else [])
+        """Full argv for a RunStep.  -t N and verbosity flags are top-level msnoise options."""
+        base = msnoise_exe[:]
+        if threads != 1:
+            base += ["-t", str(threads)]
+        verbosity = ctx.obj.get("MSNOISE_verbosity", "INFO")
+        if verbosity == "DEBUG":
+            base += ["-v"]
+        elif verbosity == "WARNING":
+            base += ["-q"]
         return base + step.cmd_tokens
 
     def _hpc_argv(category):
@@ -2856,6 +2980,222 @@ def utils_run_workflow(ctx, threads, hpc, from_category, until_category,
     if failed_cats:
         click.echo(f" Failed: {', '.join(failed_cats)}", err=True)
         ctx.exit(1)
+
+
+@utils.command(name="download")
+@click.option("--sds-path", "sds_path", default=None,
+              type=click.Path(file_okay=False, writable=True),
+              metavar="PATH",
+              help="SDS archive root to write into.  Auto-detected from the "
+                   "DataSource table when unambiguous; falls back to ./SDS.")
+@click.option("--startdate", default=None, metavar="YYYY-MM-DD",
+              help="Override project startdate.")
+@click.option("--enddate", default=None, metavar="YYYY-MM-DD",
+              help="Override project enddate.")
+@click.pass_context
+def utils_download(ctx, sds_path, startdate, enddate):
+    """Download waveforms from FDSN/EIDA sources into an SDS archive.
+
+    Reads remote DataSource entries and the station table from the database,
+    builds an ObsPy Inventory for server-side station gating, and runs
+    ObsPy MassDownloader for the project date range.  Waveforms are written
+    as day-aligned MiniSEED files in SDS layout.
+
+    The SDS write root is resolved in order:
+    --sds-path → single unambiguous local SDS DataSource → ./SDS (warning).
+
+    StationXML is stored alongside and never overwritten.  Traces are never
+    discarded for missing instrument response.
+
+    Example::
+
+        msnoise utils download
+        msnoise utils download --sds-path /data/SDS
+        msnoise utils download --startdate 2013-06-01 --enddate 2013-06-30
+    """
+    from ..core.db import connect
+    from ..msnoise_table_def import declare_tables
+    from ..core.fdsn import mass_download
+    from pathlib import Path
+
+    db      = connect()
+    _schema = declare_tables()
+    mass_download(db, _schema,
+                  sds_root=Path(sds_path) if sds_path else None,
+                  startdate_override=startdate,
+                  enddate_override=enddate)
+
+
+# ---------------------------------------------------------------------------
+# msnoise project  — project archive commands (no DB required)
+# ---------------------------------------------------------------------------
+
+@cli.group(cls=OrderedGroup)
+def project():
+    """Commands for exporting and importing MSNoise project archives."""
+    pass
+
+
+@project.command(name="export")
+@click.option(
+    "--level",
+    "levels",
+    multiple=True,
+    metavar="LEVEL",
+    help="Level(s) to export.  Repeat for multiple (e.g. --level stack --level dvv).  "
+         "Pass 'all' to export every level that has content on disk.",
+)
+@click.option(
+    "--output", "-o",
+    default=None,
+    metavar="PATH",
+    help="Destination .tar.zst file (single level only).",
+)
+@click.option(
+    "--output-dir",
+    default=None,
+    metavar="DIR",
+    help="Destination directory for multi-level export.  One .tar.zst per level "
+         "plus bundle_pointer.yaml are written here.",
+)
+@click.option(
+    "--url-base",
+    default="",
+    metavar="URL",
+    help="URL prefix for bundle_pointer.yaml (e.g. https://ftp.example.org/msnoise/study).  "
+         "Placeholder strings are written when omitted.",
+)
+@click.option(
+    "--project-dir",
+    default=".",
+    show_default=True,
+    metavar="DIR",
+    help="MSNoise project root (default: current directory).",
+)
+def project_export(levels, output, output_dir, url_base, project_dir):
+    """Export project archive(s) at one or more entry levels.
+
+    Single level — writes one .tar.zst and prints its SHA-256::
+
+        msnoise project export --level stack -o /data/level_stack.tar.zst
+
+    Multiple levels — writes one archive per level plus bundle_pointer.yaml::
+
+        msnoise project export --level stack --level dvv \\
+            --output-dir /data/bundles/
+
+    All levels with content on disk::
+
+        msnoise project export --level all --output-dir /data/bundles/ \\
+            --url-base https://ftp.seismology.be/msnoise/study
+    """
+    from ..core.project_io import export_project, export_project_levels
+
+    if not levels:
+        raise click.UsageError("Provide at least one --level (or --level all).")
+
+    # Single-level shorthand: --level X -o file.tar.zst
+    if list(levels) != ["all"] and len(levels) == 1 and output and not output_dir:
+        level = levels[0]
+        click.echo(f"Exporting level={level!r} from {project_dir!r} → {output!r}")
+        sha = export_project(project_dir, level, output)
+        click.echo(f"Done.  SHA-256: {sha}")
+        click.echo(f"Paste into bundle_pointer.yaml:\n  sha256: \"{sha}\"")
+        return
+
+    # Multi-level path — requires --output-dir
+    if not output_dir:
+        raise click.UsageError(
+            "Multi-level export requires --output-dir.  "
+            "Use -o FILE only for a single --level."
+        )
+
+    level_arg = "all" if list(levels) == ["all"] else list(levels)
+    click.echo(f"Exporting level(s)={level_arg!r} → {output_dir!r}")
+    exported = export_project_levels(project_dir, level_arg, output_dir, url_base=url_base)
+    if not exported:
+        click.echo("No levels had content to export.")
+    else:
+        click.echo(f"\nExported {len(exported)} archive(s): {list(exported)}")
+        click.echo("Review and update the URLs in bundle_pointer.yaml before publishing.")
+
+
+@project.command(name="import")
+@click.option(
+    "--from", "pointer",
+    required=True,
+    metavar="PATH",
+    help="Path to bundle_pointer.yaml.",
+)
+@click.option(
+    "--level",
+    "levels",
+    multiple=True,
+    metavar="LEVEL",
+    help="Entry level(s) to download and import.  Repeat for multiple levels "
+         "(e.g. --level stack --level dvv).  Pass 'all' to download every "
+         "level listed in bundle_pointer.yaml.",
+)
+@click.option(
+    "--project-dir",
+    default=".",
+    show_default=True,
+    metavar="DIR",
+    help="Destination directory (created if absent).",
+)
+@click.option(
+    "--with-jobs",
+    is_flag=True,
+    default=False,
+    help="Reconstruct flag=D jobs from the extracted _output/ tree "
+         "so the pipeline can be resumed immediately.",
+)
+def project_import(pointer, levels, project_dir, with_jobs):
+    """Download and import project archive(s) from a bundle_pointer.yaml.
+
+    Downloads .tar.zst archive(s) for the requested level(s), verifies
+    SHA-256, extracts all into the same project directory, initialises
+    the database, and optionally reconstructs flag=D jobs.
+
+    Examples::
+
+        # single level
+        msnoise project import --from bundle_pointer.yaml --level stack
+
+        # multiple levels — all extracted into the same project dir
+        msnoise project import --from bundle_pointer.yaml \\
+            --level stack --level dvv --project-dir ./my_project --with-jobs
+
+        # everything in bundle_pointer.yaml
+        msnoise project import --from bundle_pointer.yaml \\
+            --level all --project-dir ./my_project --with-jobs
+    """
+    from ..core.project_io import import_project_archive
+    from ..project import MSNoiseProject
+
+    if not levels:
+        raise click.UsageError("Provide at least one --level (or --level all).")
+
+    # "all" as a single value means download everything
+    level_arg = "all" if list(levels) == ["all"] else list(levels)
+
+    root = import_project_archive(pointer, level_arg, project_dir)
+    click.echo(f"Extracted to {root}")
+
+    proj = MSNoiseProject.from_project_dir(root)
+    # Record imported levels for init_db with_jobs reconstruction
+    proj._imported_levels = (
+        None if level_arg == "all" else level_arg  # None → reads meta.yaml per archive
+    )
+    proj.init_db(with_jobs=with_jobs)
+    click.echo("Database initialised.")
+
+    if with_jobs:
+        effective = level_arg if isinstance(level_arg, list) else list(levels)
+        click.echo(
+            f"\nReady.  Resume the pipeline with:\n"
+            + "\n".join(f"  msnoise new_jobs --after {lv}" for lv in effective)
+        )
 
 
 def run():

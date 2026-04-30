@@ -444,15 +444,26 @@ def run_workflow_plan(
         else:
             job_count = 0
 
-        # HPC: insert new_jobs --after unless this is the last runnable step
-        cat_info = chains.get(cat, {})
-        next_cats = cat_info.get("next_steps", []) if isinstance(cat_info, dict) else []
-        has_runnable_successor = any(
-            get_category_cli_command(nc) is not None
-            for nc in next_cats
-            if nc not in PASSTHROUGH
-        )
-        hpc_after = hpc and has_runnable_successor
+        # HPC: insert new_jobs --after unless this is the last runnable step.
+        # Walk transitively through PASSTHROUGH categories (e.g. filter → stack)
+        # so that cc correctly gets hpc_after=True even though its immediate
+        # successor is the passthrough "filter" step.
+        def _has_runnable_descendant(cat, _seen=None):
+            if _seen is None:
+                _seen = set()
+            if cat in _seen:
+                return False
+            _seen.add(cat)
+            info = chains.get(cat, {})
+            for nc in (info.get("next_steps", []) if isinstance(info, dict) else []):
+                if nc in PASSTHROUGH:
+                    if _has_runnable_descendant(nc, _seen):
+                        return True
+                elif get_category_cli_command(nc) is not None:
+                    return True
+            return False
+
+        hpc_after = hpc and _has_runnable_descendant(cat)
 
         plan.append(RunStep(
             category=cat,
@@ -1274,12 +1285,14 @@ def massive_insert_job(session, jobs):
     session.commit()
 
 
-
 def massive_update_job(session, jobs, flag="D"):
     """
     Routine to use a low level function to update much faster a list of
     :class:`~msnoise.msnoise_table_def.declare_tables.Job`. This method uses the Job.ref
     which is unique.
+
+    Note: If session becomes invalid, will attempt to get a fresh session from the engine.
+
     :type session: Session
     :param session: the database connection object
     :type jobs: list or tuple
@@ -1287,16 +1300,87 @@ def massive_update_job(session, jobs, flag="D"):
     :type flag: str
     :param flag: The destination flag.
     """
+    from sqlalchemy.exc import OperationalError, InvalidRequestError
+
     updated = False
     mappings = [{'ref': job.ref, 'flag': flag} for job in jobs]
-    while not updated:
+    max_retries = 10
+    retry_count = 0
+    session_reconnected = False
+    active_session = session
+
+    while not updated and retry_count < max_retries:
         try:
-            session.bulk_update_mappings(Job, mappings)
-            session.commit()
+            active_session.bulk_update_mappings(Job, mappings)
+            active_session.commit()
             updated = True
+
+        except OperationalError as e:
+            # Database locked or temporary connection issue - retry with backoff
+            retry_count += 1
+            if retry_count >= max_retries:
+                raise RuntimeError(
+                    f"Failed to update jobs after {max_retries} retries due to database lock/connection issues"
+                ) from e
+            time.sleep(np.random.random() * (2 ** retry_count))  # exponential backoff
+
+            # After a few retries, try to rollback the session
+            if retry_count >= 3:
+                try:
+                    active_session.rollback()
+                except Exception:
+                    pass  # rollback failed, continue with retries
+
+        except (InvalidRequestError, Exception) as e:
+            # Session is invalid/closed or other error - try to get a fresh session from engine
+            if not session_reconnected:
+                try:
+                    # Get the engine from the current session
+                    engine = active_session.get_bind()
+
+                    # Close the old session
+                    try:
+                        active_session.close()
+                    except Exception:
+                        pass
+
+                    # Create a new session from the engine
+                    from sqlalchemy.orm import sessionmaker
+                    Session = sessionmaker(bind=engine)
+                    active_session = Session()
+                    session_reconnected = True
+                    retry_count += 1
+
+                    if retry_count >= max_retries:
+                        raise RuntimeError(
+                            f"Failed to update jobs after session reconnection and {max_retries} retries"
+                        ) from e
+
+                    time.sleep(1.0)
+                    continue
+
+                except Exception as recovery_error:
+                    raise RuntimeError(
+                        f"Cannot reconnect to database: {recovery_error}"
+                    ) from e
+            else:
+                # Already reconnected session, this is a permanent failure
+                raise RuntimeError(
+                    f"Error persists after session reconnection: {type(e).__name__}: {e}"
+                ) from e
+
+    if not updated:
+        raise RuntimeError(
+            f"Failed to update jobs after {max_retries} retries"
+        )
+
+    # Clean up: if we created a new session, close it
+    if session_reconnected:
+        try:
+            active_session.close()
         except Exception:
-            time.sleep(np.random.random())
             pass
+
     return
 
 

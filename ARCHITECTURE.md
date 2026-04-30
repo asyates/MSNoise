@@ -346,6 +346,25 @@ Key columns on `Config`: `name`, `category`, `set_number`, `value` (always strin
 
 Config CSV files in `msnoise/config/config_<category>.csv` define defaults. Columns: `name`, `default`, `definition`, `type`, `possible_values`.
 
+**Two YAML schemas — do not confuse them**:
+
+| Schema | Version field | Key format | Produced by | Consumed by |
+|---|---|---|---|---|
+| Per-lineage params | `msnoise_params_version: 1` | `filter:` | `MSNoiseParams.to_yaml()` | `MSNoiseParams.from_yaml()`, `MSNoiseResult` bundle |
+| Project seed | `msnoise_project_version: 1` | `filter_1:`, `filter_2:` | hand-written / paper template / `msnoise db export-yaml` | `msnoise db init --from-yaml` |
+
+**Project YAML format** (`msnoise_project_version: 1`):
+- Keys are `category_N` (e.g. `filter_1`, `filter_2`). YAML order is preserved.
+- Each entry may have an `after` field (string or list) naming parent `category_N` keys. One `WorkflowLink` row is created per `after` entry. Missing targets → warning, not error.
+- Only overrides need to be listed; all other keys keep their CSV defaults.
+- Unknown keys produce a warning (typo guard via `update_config` returning `None`).
+- Optional top-level `data_sources:` list and `stations:` section (dict with `station_endpoint` URL, or explicit list matching the bundle provenance format).
+- `station_endpoint` should use `level=response` so `import_stationxml` saves response files to `response_path` automatically.
+- `create_project_from_yaml(session, yaml_path)` → `(created_steps, warnings)` — DB-free seed from YAML.
+- `export_project_to_yaml(session, yaml_path, only_non_defaults=True)` → path — snapshot DB → YAML. Only non-default values written by default to keep the file minimal; `--all-values` writes everything.
+
+**`_SKIP` keys** (not parsed as `category_N`): `msnoise_project_version`, `generated`, `description`, `data_sources`, `stations`.
+
 **CLI config helpers** (`core/config.py`):
 - `parse_config_key(key)` → `(category, set_number, name)`. Accepts `name` (global), `category.name` (set 1), `category.N.name` (explicit set).
 - `_cast_config_value(name, value_str, param_type)` → validated string. Validates against `param_type` (`str/int/float/bool/eval`); normalises bools to `Y`/`N`. Raises `ValueError` with a clear message on bad input. Always call before `update_config()` in CLI code.
@@ -584,10 +603,21 @@ Saves inventory to ``response_path`` automatically so instrument correction is r
 
 **DB utilities**:
 ```sh
+msnoise db init                          # interactive project init
+msnoise db init --from-yaml project.yaml # seed from project YAML (category_N + after + data_sources + stations)
+msnoise db export-yaml project.yaml      # snapshot current DB → project YAML (only non-defaults)
+msnoise db export-yaml project.yaml --all-values  # include all keys explicitly
 msnoise db upgrade          # add new config params to existing DB (all categories)
 msnoise db clean_duplicates # remove duplicate job rows
 msnoise db dump             # export DB to CSV
 ```
+
+`--from-yaml` runs the full installer (schema creation, db.ini), then calls `create_project_from_yaml` which:
+1. Creates one config set per `category_N` key (CSV defaults + YAML overrides).
+2. Creates `WorkflowStep` + `WorkflowLink` rows from `after` declarations.
+3. Inserts `DataSource` rows from the `data_sources:` list.
+4. Populates stations: `station_endpoint` URL → `import_stationxml` (saves responses); explicit list → `update_station`.
+Failures in step 4 are warnings, not errors (network may be unavailable at init time).
 
 ---
 

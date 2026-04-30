@@ -229,10 +229,14 @@ def propagate_stack_jobs_from_cc_done(session):
     # --- Find already-existing STACK jobs for these step_ids ------------------
     stack_step_ids = list({k[0] for k in desired})
 
-    # Fetch all existing jobs for those step_ids in one query
+    # Only load existing rows for the days we intend to insert — O(desired)
+    # instead of O(all_jobs).  We cannot miss a match: any key NOT in
+    # desired_days is, by construction, absent from desired too.
+    desired_days = list({k[1] for k in desired})
     existing_rows = (
         session.query(Job.ref, Job.step_id, Job.day, Job.pair, Job.lineage_id, Job.flag)
         .filter(Job.step_id.in_(stack_step_ids))
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     existing_map: dict = {}   # (step_id, day, pair, lineage_id) -> (ref, flag)
@@ -506,11 +510,12 @@ def propagate_mwcs_jobs_from_stack_done(session):
         return 0
 
     dvv_step_ids = list({k[0] for k in desired})
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id.in_(dvv_step_ids))
-        .filter(Job.day != "REF").filter(Job.day != "DVV")
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -669,12 +674,12 @@ def propagate_mwcs_jobs_from_refstack_done(session):
         return 0
 
     dvv_step_ids = list({k[0] for k in desired})
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id.in_(dvv_step_ids))
-        .filter(Job.day != "REF")
-        .filter(Job.day != "DVV")
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -862,11 +867,13 @@ def create_passthrough_jobs_from_done_parent(session, parent_step, child_step):
     if not desired:
         return 0
 
-    # One bulk SELECT for existing child jobs
+    # Only load existing rows for the days we intend to insert — O(desired)
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id == child_step.step_id)
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -957,12 +964,14 @@ def propagate_psd_rms_jobs_from_psd_done(session):
         logger.info("[--after psd] PSD_RMS jobs created: 0")
         return 0
 
-    # One bulk SELECT for all existing psd_rms jobs
+    # Only load existing rows for the days we intend to insert — O(desired)
     psd_rms_step_ids = list({k[0] for k in desired})
+    desired_days = list({k[1] for k in desired})
     existing_keys: set = set()
     existing_rows = (
         session.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
         .filter(Job.step_id.in_(psd_rms_step_ids))
+        .filter(Job.day.in_(desired_days))
         .all()
     )
     for r in existing_rows:
@@ -1213,15 +1222,48 @@ def main(init=False, nocc=False, after=False):
         # propagate_first_runnable_from_category can't handle that (it assumes pair format
         # is preserved), so we use the dedicated function instead.
         if source_category == "preprocess":
-            cc_jobs, created = create_cc_jobs_from_preprocess(session=db)
+            cc_jobs, _ = create_cc_jobs_from_preprocess(session=db)
+            created = 0
             if cc_jobs:
-                for job in cc_jobs:
-                    update_job(db, job['day'], job['pair'],
-                                        job['jobtype'], job['flag'],
-                                        step_id=job.get('step_id'),
-                                        priority=job.get('priority', 0),
-                                        lineage=job.get('lineage'),
-                                        commit=False)
+                Job = _Job
+                now = datetime.datetime.now(datetime.timezone.utc)
+
+                # Resolve all unique lineage strings → IDs in one batch,
+                # then filter against existing jobs (handles re-runs).
+                unique_lineages = {j['lineage'] for j in cc_jobs}
+                lineage_id_map  = {
+                    ls: _get_or_create_lineage_id(db, ls)
+                    for ls in unique_lineages
+                }
+
+                # Build desired key set for dedup check
+                cc_step_ids = list({j['step_id'] for j in cc_jobs})
+                desired_days = list({j['day'] for j in cc_jobs})
+                existing = {
+                    (r.step_id, r.day, r.pair, r.lineage_id)
+                    for r in db.query(Job.step_id, Job.day, Job.pair, Job.lineage_id)
+                    .filter(Job.step_id.in_(cc_step_ids))
+                    .filter(Job.day.in_(desired_days))
+                    .all()
+                }
+
+                to_insert = []
+                for j in cc_jobs:
+                    lid = lineage_id_map[j['lineage']]
+                    key = (j['step_id'], j['day'], j['pair'], lid)
+                    if key not in existing:
+                        to_insert.append({
+                            'day':        j['day'],
+                            'pair':       j['pair'],
+                            'jobtype':    j['jobtype'],
+                            'step_id':    j['step_id'],
+                            'priority':   j.get('priority', 0),
+                            'flag':       'T',
+                            'lastmod':    now,
+                            'lineage_id': lid,
+                        })
+
+                created, _ = bulk_upsert_jobs(db, to_insert, [], now)
                 db.commit()
             logger.info(f'Propagation from category "preprocess" created {created} CC job(s)')
             return

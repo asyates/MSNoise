@@ -1,9 +1,39 @@
-"""FDSN/EIDA waveform fetching for the MSNoise preprocess step.
+"""FDSN/EIDA waveform fetching and bulk SDS download for MSNoise.
 
-This module handles fetching raw waveforms from FDSN web services or the
-EIDA routing client, writing optional raw caches, and per-station error
-handling.  It is the **only** place in MSNoise that makes network calls to
-external data services.
+This module is the **only** place in MSNoise that makes network calls to
+external data services.  It provides two distinct modes of data access:
+
+**On-the-fly fetch** (used by the preprocess step)
+    :func:`fetch_and_preprocess` / :func:`fetch_raw_waveforms` —
+    called per station per day during the preprocess worker loop.
+    Streams waveforms directly from FDSN into the processing pipeline
+    without writing a local archive.
+
+**Bulk download** (:func:`mass_download`)
+    Wraps ObsPy's :class:`~obspy.clients.fdsn.mass_downloader.MassDownloader`
+    to fetch all waveforms for the full project date range in one call,
+    routing them into a day-aligned local SDS archive.  Station gating is
+    done server-side via an ObsPy
+    :class:`~obspy.core.inventory.Inventory` built from the MSNoise station
+    table — avoiding any NSLC cartesian blowup.  After bulk download,
+    run ``msnoise scan_archive`` to populate data availability before
+    starting the pipeline.
+
+Typical bulk-download sequence::
+
+    msnoise db init --from-yaml project.yaml
+    msnoise utils import-stationxml https://...   # populates locs/chans
+    msnoise utils download                        # calls mass_download()
+    msnoise scan_archive --init
+    msnoise utils run_workflow
+
+SDS root resolution (in order):
+
+1. Explicit ``--sds-path`` CLI option.
+2. The single unambiguous local SDS DataSource URI in the database.
+3. ``./SDS`` (with a warning).
+
+StationXML files are written to ``<sds_root>/../stationxml/`` and never
 """
 
 __all__ = [
@@ -14,14 +44,49 @@ __all__ = [
     "is_remote_source",
     "parse_datasource_scheme",
     "get_auth",
+    "mass_download",
+    "FDSNConnectionError",
 ]
 
 
 import logging
 import os
 import time
+from pathlib import Path
 
 logger = logging.getLogger("msnoise.fdsn")
+
+
+# ---------------------------------------------------------------------------
+# Custom exceptions
+# ---------------------------------------------------------------------------
+
+class FDSNConnectionError(OSError):
+    """Raised when an FDSN request fails due to a connection-level error.
+
+    Distinct from :class:`~obspy.clients.fdsn.header.FDSNNoDataException`
+    (no matching data) and auth errors (wrong credentials).  Callers that
+    cache client objects should catch this, invalidate the cache, rebuild
+    the client, and retry.
+    """
+
+
+def _is_connection_error(exc) -> bool:
+    """Return True for errors that indicate a stale or broken connection."""
+    msg = str(exc)
+    # requests-level
+    try:
+        import requests.exceptions as _re
+        if isinstance(exc, (_re.ConnectionError, _re.Timeout,
+                            _re.ChunkedEncodingError)):
+            return True
+    except ImportError:
+        pass
+    # HTTP 503 / 504 from FDSN server
+    if any(code in msg for code in ("503", "504", "timed out", "reset", "broken pipe",
+                                     "RemoteDisconnected", "IncompleteRead")):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +195,7 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
     from obspy import Stream
 
     last_exc = None
+    last_is_conn = False
     for attempt in range(1, retries + 1):
         try:
             return client.get_waveforms_bulk(bulk_request)
@@ -141,6 +207,7 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
             # Auth failures are not transient
             if "401" in err_str or "403" in err_str or "Unauthorized" in err_str:
                 raise
+            last_is_conn = _is_connection_error(exc)
             wait = 2 ** attempt
             logger.warning(
                 f"FDSN bulk request failed (attempt {attempt}/{retries}): "
@@ -148,6 +215,10 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
             )
             time.sleep(wait)
 
+    if last_is_conn:
+        raise FDSNConnectionError(
+            f"FDSN connection lost after {retries} attempts: {last_exc}"
+        ) from last_exc
     logger.error(f"FDSN bulk request failed after {retries} attempts: {last_exc}")
     return Stream()
 
@@ -156,7 +227,8 @@ def fetch_waveforms_bulk(client, bulk_request, retries=3):
 # High-level: fetch + optional raw cache + per-station result
 # ---------------------------------------------------------------------------
 
-def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None):
+def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None,
+                        client=None):
     """Fetch raw (unprocessed) waveforms from FDSN/EIDA for a batch of stations.
 
     Issues one ``get_waveforms_bulk`` call covering all stations in *jobs*,
@@ -216,8 +288,11 @@ def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None):
     )
 
     try:
-        client = build_client(ds)
+        if client is None:
+            client = build_client(ds)
         raw_stream = fetch_waveforms_bulk(client, bulk, retries=retries)
+    except FDSNConnectionError:
+        raise  # let caller invalidate the client cache and rebuild
     except FDSNNoDataException:
         log.warning(f"No data from {ds.name!r} for {goal_day}")
         return Stream()
@@ -239,7 +314,7 @@ def fetch_raw_waveforms(db, jobs, goal_day, params, t_start=None, t_end=None):
 
 
 def fetch_and_preprocess(
-    db, jobs, goal_day, params, responses=None, loglevel="INFO"
+    db, jobs, goal_day, params, responses=None, loglevel="INFO", client=None
 ):
     """Fetch waveforms from FDSN/EIDA for a batch of stations on one day.
 
@@ -267,7 +342,8 @@ def fetch_and_preprocess(
     t2 = t1 + 86400
 
     # Delegate the actual FDSN fetch (+ optional raw cache) to fetch_raw_waveforms
-    raw_stream = fetch_raw_waveforms(db, jobs, goal_day, params, t_start=t1, t_end=t2)
+    raw_stream = fetch_raw_waveforms(db, jobs, goal_day, params, t_start=t1, t_end=t2,
+                                     client=client)
 
     if not raw_stream:
         return Stream(), [], jobs
@@ -336,3 +412,212 @@ def _write_raw_cache(stream, output_folder, step_name, goal_day):
             tr.data = tr.data.astype("float32")
         st.write(fpath, format="MSEED")
         logger.debug(f"Raw cache written: {fpath}")
+
+
+# ---------------------------------------------------------------------------
+# MassDownloader — bulk SDS population
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SDS = Path("SDS")
+
+
+def _resolve_sds_root(session, schema, sds_root: Path | None) -> Path:
+    """Return the SDS write root, with fallback heuristic and logging.
+
+    Resolution order:
+
+    1. Explicit *sds_root* argument (from ``--sds-path`` CLI option).
+    2. Exactly one local SDS DataSource (``data_structure="SDS"``, non-remote
+       URI) → use its URI.
+    3. Fall back to ``./SDS`` with a warning.
+
+    :param session: SQLAlchemy session.
+    :param schema: Declared schema object.
+    :param sds_root: Explicit path from caller, or ``None``.
+    :returns: Resolved :class:`~pathlib.Path`.
+    """
+    if sds_root is not None:
+        logger.info("SDS root (explicit): %s", sds_root)
+        return sds_root
+
+    all_sources = session.query(schema.DataSource).all()
+    local_sds = [
+        ds for ds in all_sources
+        if not is_remote_source(ds.uri) and ds.uri
+        and ds.data_structure == "SDS"
+    ]
+
+    if len(local_sds) == 1:
+        resolved = Path(local_sds[0].uri)
+        logger.info("SDS root (from DataSource %r): %s", local_sds[0].name, resolved)
+        return resolved
+
+    if len(local_sds) > 1:
+        logger.warning(
+            "Multiple local SDS DataSources found (%s) — cannot pick one "
+            "automatically.  Defaulting to %s.  Use --sds-path to override.",
+            ", ".join(repr(ds.name) for ds in local_sds),
+            _DEFAULT_SDS,
+        )
+    else:
+        logger.warning(
+            "No local SDS DataSource found.  Defaulting to %s.  "
+            "Use --sds-path to override.",
+            _DEFAULT_SDS,
+        )
+    return _DEFAULT_SDS
+
+
+def _sds_mseed_storage(sds_root: Path):
+    """``mseed_storage`` callable: route traces into day-aligned SDS files.
+
+    Returns ``True`` (skip) for files that already exist.
+
+    :param sds_root: Root of the SDS archive.
+    """
+    def fn(network, station, location, channel, starttime, _endtime):
+        loc = "" if (location is None or location == "--") else location
+        fname = (
+            f"{network}.{station}.{loc}.{channel}.D"
+            f".{starttime.year}.{starttime.julday:03d}"
+        )
+        dest = (
+            sds_root
+            / str(starttime.year)
+            / network
+            / station
+            / f"{channel}.D"
+            / fname
+        )
+        if dest.exists():
+            return True
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return str(dest)
+    return fn
+
+
+def _stationxml_storage(xml_root: Path):
+    """``stationxml_storage`` callable: persist StationXML, never overwrite.
+
+    :param xml_root: Directory for StationXML files.
+    """
+    xml_root.mkdir(parents=True, exist_ok=True)
+
+    def fn(network, station):
+        dest = xml_root / f"{network}.{station}.xml"
+        return True if dest.exists() else str(dest)
+    return fn
+
+
+def mass_download(session, schema, sds_root=None,
+                  startdate_override=None, enddate_override=None):
+    """Download waveforms for all remote DataSources into an SDS archive.
+
+    Builds an ObsPy :class:`~obspy.core.inventory.Inventory` from the station
+    table and passes it as ``limit_stations_to_inventory`` — the
+    MassDownloader gates at station level server-side, avoiding any NSLC
+    cartesian blowup.  Channel codes are the union of all ``Station.chans()``.
+
+    ``chunklength_in_sec=86400`` produces day-aligned SDS files.  StationXML
+    is stored under ``<sds_root>/../stationxml/`` and never overwritten.
+    ``sanitize=False`` prevents discarding traces for missing response.
+
+    :param session: SQLAlchemy session.
+    :param schema: Declared schema object (from ``declare_tables()``).
+    :param sds_root: SDS write root as :class:`~pathlib.Path`, or ``None``
+        to auto-resolve (see :func:`_resolve_sds_root`).
+    :param startdate_override: Override project startdate (``YYYY-MM-DD``).
+    :param enddate_override: Override project enddate (``YYYY-MM-DD``).
+    :raises ValueError: If no remote DataSource or no valid stations found.
+    """
+    from collections import defaultdict
+
+    from obspy import UTCDateTime
+    from obspy.core.inventory import Inventory, Network
+    from obspy.core.inventory import Station as OBStation
+    from obspy.clients.fdsn.mass_downloader import (
+        GlobalDomain, MassDownloader, Restrictions,
+    )
+    from .config import get_config
+
+    # --- date range ---
+    startdate = startdate_override or get_config(
+        session, "startdate", category="global", set_number=1)
+    enddate = enddate_override or get_config(
+        session, "enddate", category="global", set_number=1)
+    t_start = UTCDateTime(startdate)
+    t_end   = UTCDateTime(enddate) + 86400
+
+    # --- remote providers ---
+    all_sources    = session.query(schema.DataSource).all()
+    remote_sources = [ds for ds in all_sources if is_remote_source(ds.uri)]
+    if not remote_sources:
+        raise ValueError(
+            "No remote (FDSN/EIDA) DataSource found.  "
+            "`msnoise utils download` requires at least one fdsn:// or eida:// source."
+        )
+
+    # --- SDS + StationXML paths ---
+    sds_root = _resolve_sds_root(session, schema, sds_root)
+    xml_root = sds_root.parent / "stationxml"
+    logger.info("StationXML: %s", xml_root)
+
+    # --- inventory from station table ---
+    stations = (
+        session.query(schema.Station)
+        .filter(schema.Station.used == True)  # noqa: E712
+        .all()
+    )
+    nets: dict = defaultdict(list)
+    for sta in stations:
+        locs  = sta.locs()
+        chans = sta.chans()
+        if not locs:
+            logger.warning("%s.%s has no used_location_codes — skipping.", sta.net, sta.sta)
+            continue
+        if not chans:
+            logger.warning("%s.%s has no used_channel_names — skipping.", sta.net, sta.sta)
+            continue
+        nets[sta.net].append(OBStation(
+            code=sta.sta,
+            latitude=sta.Y or 0.0,
+            longitude=sta.X or 0.0,
+            elevation=sta.altitude or 0.0,
+            creation_date=UTCDateTime(0),
+        ))
+    if not nets:
+        raise ValueError(
+            "No valid stations found.  Run `msnoise populate` before downloading."
+        )
+    inv = Inventory(
+        networks=[Network(code=net, stations=stas) for net, stas in nets.items()],
+        source="MSNoise",
+    )
+    n_sta = sum(len(s) for s in nets.values())
+    logger.info("Inventory: %d network(s), %d station(s).", len(nets), n_sta)
+
+    all_chans = ",".join(sorted({c for sta in stations for c in sta.chans()}))
+    logger.info("Channel union: %s", all_chans)
+
+    # --- single MassDownloader call ---
+    restr = Restrictions(
+        starttime=t_start,
+        endtime=t_end,
+        network="*",
+        station="*",
+        channel=all_chans,
+        limit_stations_to_inventory=inv,
+        chunklength_in_sec=86400,
+        reject_channels_with_gaps=False,
+        minimum_length=0.0,
+        sanitize=False,
+    )
+    mdl = MassDownloader(providers=[build_client(ds) for ds in remote_sources])
+    logger.info("Starting MassDownload: %s → %s, %d source(s), SDS: %s",
+                startdate, enddate, len(remote_sources), sds_root)
+    mdl.download(
+        GlobalDomain(), restr,
+        mseed_storage=_sds_mseed_storage(sds_root),
+        stationxml_storage=_stationxml_storage(xml_root),
+    )
+    logger.info("MassDownload complete.")

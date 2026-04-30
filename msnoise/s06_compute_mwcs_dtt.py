@@ -1,15 +1,28 @@
-"""Compute dt/t from MWCS measurements using weighted linear regression.
+r"""Compute dt/t from MWCS measurements using weighted linear regression.
 
 Reads the per-pair MWCS NetCDF files written by :mod:`msnoise.s05_compute_mwcs`
 and, for each time step, fits a weighted linear regression of the measured delay
-the measured delay ``delta_t`` against lag time ``t``,
-where ``delta_t(t) = -(dv/v) * t + a``:
+``delta_t`` against lag time ``t``, following :footcite:t:`Clarke2011` (which
+extends :footcite:t:`Poupinet1984`):
+
+.. math::
+
+    \delta t(t) = -\frac{dv}{v}\, t + a
 
 Two fits are produced at each time step:
 
-- **Origin-forced** (``m0 / em0``): intercept fixed to zero, giving the
-  purest estimate of :math:`-dv/v`.
-- **With intercept** (``m / em / a / ea``): free intercept accounts for a
+- **Origin-forced** (``m0 / em0``): intercept :math:`a = 0`, giving the
+  purest estimate of :math:`-dv/v`:
+
+  .. math::
+
+      \frac{dv}{v} = -\frac{
+          \sum_j w_j\, t_j\, \delta t_j
+      }{
+          \sum_j w_j\, t_j^2
+      }
+
+- **With intercept** (``m / em / a / ea``): free :math:`a` accounts for a
   constant clock drift or instrumental offset.
 
 Before fitting, lag windows outside ``[minlag, minlag + width]`` are masked,
@@ -52,6 +65,8 @@ Configuration Parameters
 * |cc.components_to_compute|
 * |cc.components_to_compute_single_station|
 * |global.hpc|
+
+.. footbibliography::
 """
 
 import time
@@ -184,7 +199,14 @@ def main(loglevel="INFO"):
                     EM[EM > params.mwcs_dtt.dtt_maxerr] = 1.0
 
                 # Exclude values exceeding dtt_maxdtt
-                dtt_values = np.abs(M / tArray)
+                # dv/v = -dt/t; division by zero at zero-lag windows gives inf,
+                # which is immediately excluded by the dtt_maxdtt filter below.
+                # Use np.divide with where= to avoid the RuntimeWarning.
+                dtt_values = np.abs(
+                    np.divide(M, tArray,
+                              where=tArray != 0,
+                              out=np.full_like(M, np.inf))
+                )
                 row_indices, col_indices = np.where(dtt_values > params.mwcs_dtt.dtt_maxdtt)
                 EM[row_indices, col_indices]   = 1.0
                 MCOH[row_indices, col_indices] = 0.0

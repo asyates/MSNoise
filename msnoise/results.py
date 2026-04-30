@@ -519,6 +519,98 @@ class MSNoiseResult:
 
     # ── navigation ────────────────────────────────────────────────────────────
 
+    def _station_map(self) -> dict:
+        """Return ``{'NET.STA': AttribDict}`` parsed from project.yaml.
+
+        Used by :meth:`get_distance` and :meth:`get_distances` in DB-free
+        archive mode.  Result is cached on the instance after first call.
+        """
+        if hasattr(self, "_cached_station_map"):
+            return self._cached_station_map
+        import yaml
+        from pathlib import Path
+        from obspy.core.util.attribdict import AttribDict
+
+        yaml_path = Path(self.output_folder) / "project.yaml"
+        if not yaml_path.exists():
+            raise FileNotFoundError(
+                f"project.yaml not found in {self.output_folder}. "
+                "Cannot resolve station coordinates without a DB."
+            )
+        with open(yaml_path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        self._cached_station_map = {
+            f"{s['net']}.{s['sta']}": AttribDict(s)
+            for s in doc.get("stations", [])
+        }
+        return self._cached_station_map
+
+    def get_distance(self, pair: str) -> float:
+        """Return interstation distance in km for *pair*.
+
+        Works with a live DB (via :attr:`_db`) or in DB-free archive mode
+        (reads station coordinates from ``project.yaml``).
+
+        :param pair: ``"NET.STA.LOC:NET.STA.LOC"`` formatted pair string.
+        :returns: Distance in kilometres.
+        :rtype: float
+        """
+        from msnoise.core.stations import get_interstation_distance
+
+        sta1_id, sta2_id = pair.split(":")
+        n1, s1 = sta1_id.split(".")[:2]
+        n2, s2 = sta2_id.split(".")[:2]
+
+        if self._db is not None:
+            from msnoise.api import get_station
+            st1 = get_station(self._db, n1, s1)
+            st2 = get_station(self._db, n2, s2)
+        else:
+            smap = self._station_map()
+            key1, key2 = f"{n1}.{s1}", f"{n2}.{s2}"
+            if key1 not in smap:
+                raise KeyError(f"Station {key1!r} not found in project.yaml")
+            if key2 not in smap:
+                raise KeyError(f"Station {key2!r} not found in project.yaml")
+            st1, st2 = smap[key1], smap[key2]
+
+        coords = getattr(st1, "coordinates", "DEG")
+        return get_interstation_distance(st1, st2, coordinates=coords)
+
+    def get_distances(self, pairs=None, components=None) -> dict:
+        """Return ``{pair: dist_km}`` for all (or selected) pairs.
+
+        Discovers available pairs by scanning the ``_output`` filesystem tree
+        so no DB is required.  Distances are computed via :meth:`get_distance`.
+
+        :param pairs:      Iterable of pair strings to restrict the result.
+                           ``None`` = all discovered pairs.
+        :param components: Component filter (e.g. ``"ZZ"``).  ``None`` = all.
+        :returns: Dict mapping pair string → distance in km.
+        :rtype: dict[str, float]
+        """
+        import os, glob
+
+        # Discover pairs from _output tree
+        output_base = os.path.join(self.output_folder, *self.lineage_names, "_output")
+        discovered: set[str] = set()
+        for nc in glob.glob(os.path.join(output_base, "**", "*.nc"), recursive=True):
+            stem = os.path.splitext(os.path.basename(nc))[0]
+            if "_" in stem:
+                pair_str = stem.replace("_", ":", 1)
+                discovered.add(pair_str)
+
+        if pairs is not None:
+            discovered = discovered & set(pairs)
+
+        result = {}
+        for pair in sorted(discovered):
+            try:
+                result[pair] = self.get_distance(pair)
+            except (KeyError, FileNotFoundError):
+                pass
+        return result
+
     def branches(self, include_empty: bool = False) -> list:
         """Return downstream MSNoiseResult objects one step below this lineage.
 

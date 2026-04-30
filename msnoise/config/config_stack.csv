@@ -1,8 +1,9 @@
 name,default,definition,type,possible_values
-stack_method,linear,Stack Method: Linear Mean or Phase Weighted Stack,str,linear/pws
+stack_method,linear,Stack Method: Linear Mean or Phase Weighted Stack,str,linear/pws/tfpws
 pws_timegate,10.0,"If ``stack_method`` ='pws', width of the smoothing (in seconds)",float,
 pws_power,2.0,"If ``stack_method`` =""pws"", Power of the Weighting",float,
 mov_stack,"(('1D','1D'))","A list of two parameters: the time to ""roll"" over (default 1 day) and the granularity (step) of the resulting stacked CCFs (default 1 day) to stack for the Moving-window stacks. This can be a list of tuples, e.g. (('1d','1d'),('2d','1d')) corresponds to the MSNoise 1.6 ""1,2"" before. Time deltas can be anything pandas can interpret (""d"", ""min"", ""sec"", etc).",eval,
 wienerfilt,N,Apply wiener filter before stacking? Y[N],bool,Y/N
 wiener_mlen,24h,Smoothing along date axis (time delta),str,
 wiener_nlen,0.5s,Smoothing along lag time axis (time delta),str,
+tfpws_nscales,20,"Number of log-spaced CWT scales spanning freqmin–freqmax for tf-PWS stacking (``stack_method`` = tfpws only)",int,

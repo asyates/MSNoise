@@ -57,6 +57,7 @@ import datetime
 import glob
 
 import numpy as np
+from scipy.signal import iirfilter as _iirfilter, zpk2sos as _zpk2sos, sosfiltfilt as _sosfiltfilt
 logger = _logging.getLogger("msnoise.preprocessing")
 
 
@@ -91,17 +92,25 @@ def apply_preprocessing_to_stream(stream, params, responses=None, logger=None):
     if not stream:
         return _Stream()
 
+    # Cache config attributes — avoids repeated attribute-chain traversal
+    pp             = params.preprocess
+    highpass       = float(pp.preprocess_highpass)
+    lowpass        = float(pp.preprocess_lowpass)
+    cc_sr          = float(pp.cc_sampling_rate)
+    taper_length   = float(pp.preprocess_taper_length)
+    max_gap_s      = float(pp.preprocess_max_gap)
+    resamp_method  = pp.resampling_method
+    do_response    = pp.remove_response
+
     # 1. Phase-shift alignment
     for i, trace in enumerate(stream):
-        stream[i] = check_and_phase_shift(
-            trace, params.preprocess.preprocess_taper_length)
+        stream[i] = check_and_phase_shift(trace, taper_length)
 
     # 2. Gap detection and filling
     gaps = getGaps(stream)
     if gaps:
         logger.debug(f" found {len(gaps)} gap(s)")
-        max_gap = (params.preprocess.preprocess_max_gap
-                   * stream[0].stats.sampling_rate)
+        max_gap = max_gap_s * stream[0].stats.sampling_rate
         while gaps:
             too_long = 0
             for gap in gaps:
@@ -124,18 +133,18 @@ def apply_preprocessing_to_stream(stream, params, responses=None, logger=None):
 
     # 3. Sampling-rate check
     for tr in list(stream):
-        if tr.stats.sampling_rate < (params.preprocess.cc_sampling_rate - 1):
+        if tr.stats.sampling_rate < (cc_sr - 1):
             logger.warning(
                 f"Trace {tr.id} sampling rate {tr.stats.sampling_rate} < "
-                f"cc_sampling_rate {params.preprocess.cc_sampling_rate}, removing")
+                f"cc_sampling_rate {cc_sr}, removing")
             stream.remove(tr)
 
-    taper_length = params.preprocess.preprocess_taper_length
     for tr in list(stream):
         if tr.stats.npts < (4 * taper_length * tr.stats.sampling_rate):
             stream.remove(tr)
         else:
-            tr.detrend(type="demean")
+            # detrend("linear") removes mean + trend in one pass;
+            # a prior detrend("demean") would be redundant.
             tr.detrend(type="linear")
             tr.taper(max_percentage=None, max_length=taper_length)
 
@@ -143,40 +152,45 @@ def apply_preprocessing_to_stream(stream, params, responses=None, logger=None):
         return _Stream()
 
     # 4. Filter and downsample
+    # Pre-compute SOS once per call — constant for all traces at the same
+    # native sampling rate.  Avoids iirfilter+zpk2sos inside the trace loop.
+    if stream:
+        native_sr = stream[0].stats.sampling_rate
+        _nyq = 0.5 * native_sr
+        _z, _p, _k = _iirfilter(4, highpass / _nyq, btype='highpass',
+                                 ftype='butter', output='zpk')
+        _sos_hp = _zpk2sos(_z, _p, _k)
+        _needs_lp = native_sr != cc_sr
+        if _needs_lp:
+            _z, _p, _k = _iirfilter(8, lowpass / _nyq, btype='lowpass',
+                                     ftype='butter', output='zpk')
+            _sos_lp = _zpk2sos(_z, _p, _k)
+
     for trace in stream:
-        trace.filter("highpass",
-                     freq=params.preprocess.preprocess_highpass,
-                     zerophase=True, corners=4)
-        if trace.stats.sampling_rate != params.preprocess.cc_sampling_rate:
-            trace.filter("lowpass",
-                         freq=params.preprocess.preprocess_lowpass,
-                         zerophase=True, corners=8)
-            method = params.preprocess.resampling_method
-            if method == "Resample":
+        trace.data = _sosfiltfilt(_sos_hp, trace.data)
+        if trace.stats.sampling_rate != cc_sr:
+            trace.data = _sosfiltfilt(_sos_lp, trace.data)
+            if resamp_method == "Resample":
                 trace.data = resample(
-                    trace.data,
-                    params.preprocess.cc_sampling_rate / trace.stats.sampling_rate,
+                    trace.data, cc_sr / trace.stats.sampling_rate,
                     "sinc_fastest")
-            elif method == "Decimate":
-                factor = trace.stats.sampling_rate / params.preprocess.cc_sampling_rate
+            elif resamp_method == "Decimate":
+                factor = trace.stats.sampling_rate / cc_sr
                 if int(factor) != factor:
                     raise ValueError(
                         f"{trace.id}: cannot decimate by non-integer factor "
                         f"{factor} (sr={trace.stats.sampling_rate} → "
-                        f"cc_sampling_rate={params.preprocess.cc_sampling_rate}). "
+                        f"cc_sampling_rate={cc_sr}). "
                         f"Use Resample or Lanczos instead."
                     )
                 trace.data = trace.data[::int(factor)]
-            elif method == "Lanczos":
+            elif resamp_method == "Lanczos":
                 trace.data = np.array(trace.data)
-                trace.interpolate(
-                    method="lanczos",
-                    sampling_rate=params.preprocess.cc_sampling_rate,
-                    a=1.0)
-            trace.stats.sampling_rate = params.preprocess.cc_sampling_rate
+                trace.interpolate(method="lanczos", sampling_rate=cc_sr, a=1.0)
+            trace.stats.sampling_rate = cc_sr
 
     # 5. Instrument response removal
-    if params.preprocess.remove_response and responses is not None:
+    if do_response and responses is not None:
         try:
             stream.attach_response(responses)
             stream.remove_response(
@@ -187,7 +201,8 @@ def apply_preprocessing_to_stream(stream, params, responses=None, logger=None):
             return _Stream()
 
     for tr in stream:
-        tr.data = tr.data.astype(np.float32)
+        if tr.data.dtype != np.float32:
+            tr.data = tr.data.astype(np.float32)
         if tr.stats.location == "":
             tr.stats.location = "--"
 
@@ -239,10 +254,10 @@ def preprocess(stations, comps, goal_day, params, responses=None, loglevel="INFO
     output = Stream()
     MULTIPLEX_files = {}
     db = connect()
+    gd = datetime.datetime.strptime(goal_day, '%Y-%m-%d')
     for station in stations:
         datafiles[station] = {}
         net, sta, loc = station.split('.')
-        gd = datetime.datetime.strptime(goal_day, '%Y-%m-%d')
         files = get_data_availability(
             db, net=net, sta=sta, loc=loc, starttime=gd, endtime=gd + datetime.timedelta(seconds=86401))
         for comp in comps:
@@ -288,7 +303,7 @@ def preprocess(stations, comps, goal_day, params, responses=None, loglevel="INFO
                         try:
                             # print("Reading %s" % file)
                             # t=  time.time()
-                            st = read(file, dytpe=float,
+                            st = read(file,
                                       starttime=UTCDateTime(gd),
                                       endtime=UTCDateTime(gd)+86400,
                                       station=sta,

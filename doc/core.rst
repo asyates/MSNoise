@@ -46,6 +46,8 @@ Computation (CC / MWCS / WCT)
 Preprocessing
 -------------
 
+.. footbibliography::
+
 .. automodule:: msnoise.core.preprocessing
    :members:
 
@@ -59,4 +61,10 @@ FDSN / EIDA Data Access
 ------------------------
 
 .. automodule:: msnoise.core.fdsn
+   :members:
+
+Project Archive I/O
+--------------------
+
+.. automodule:: msnoise.core.project_io
    :members:

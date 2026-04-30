@@ -1,6 +1,11 @@
 """
 Compute Power Spectral Densities and save results as NetCDF files.
 
+PSD windows are estimated using the Probabilistic Power Spectral Density
+(PPSD) method of :footcite:t:`McNamara2004`, as implemented by ObsPy
+(:footcite:t:`Beyreuther2010`).  Reference noise models
+(NLNM / NHNM) are from :footcite:t:`Peterson1993`.
+
 This step processes **psd** workflow jobs — one job per station per day —
 and writes a single NetCDF file per station-channel-day containing all
 individual PSD window estimates.  The file layout is::
@@ -51,6 +56,8 @@ Configuration Parameters
 * |global.hpc|
 
 .. versionadded:: 2.0
+
+.. footbibliography::
 """
 
 import os

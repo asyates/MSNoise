@@ -1,4 +1,32 @@
-"""
+r"""Compute seismic velocity changes via the stretching method.
+
+The stretching technique (:footcite:t:`SensSchoenfelder2006`) measures
+:math:`dv/v` by finding the uniform dilation factor :math:`\varepsilon`
+that maximises the normalised cross-correlation between a time-stretched
+copy of the reference CCF and the current daily CCF:
+
+.. math::
+
+    s_\varepsilon(\tau) = s_\text{ref}\!\left(\frac{\tau}{1+\varepsilon}\right)
+
+.. math::
+
+    CC(\varepsilon) = \frac{
+        \int_{\tau_\text{min}}^{\tau_\text{max}}
+        s_\text{cur}(\tau)\, s_\varepsilon(\tau)\, d\tau
+    }{
+        \sqrt{
+            \int |s_\text{cur}|^2 d\tau \cdot
+            \int |s_\varepsilon|^2 d\tau
+        }
+    }
+
+The relative velocity change is :math:`dv/v = -\varepsilon^*` where
+:math:`\varepsilon^* = \arg\max_\varepsilon\, CC(\varepsilon)`.
+In practice, :math:`\varepsilon` is sampled over ``stretching_nsteps``
+values in :math:`[-\varepsilon_\text{max},\, \varepsilon_\text{max}]`
+(``stretching_max``) and the optimal value is found by peak-picking.
+
 .. warning:: if using only ``mov_stack`` = 1, no STR jobs is inserted in the
     database and consequently, no STR calculation will be done! FIX!
 
@@ -59,6 +87,8 @@ conflicts). This works both with SQLite and MySQL but be aware problems
 could occur with SQLite.
 
     Parallel Processing
+
+.. footbibliography::
 """
 
 from .core.db import connect, get_logger
@@ -122,10 +152,21 @@ def _hwhm_errors(corr_coeffs):
 
 
 def stretch_mat_creation(refcc, str_range=0.01, nstr=1001):
-    """Matrix of stretched instances of a reference trace.
+    r"""Matrix of stretched instances of a reference trace.
 
-    The reference trace is stretched using cubic spline interpolation from
-    ``-str_range`` to ``str_range`` (in %) across ``nstr`` steps.
+    Implements the core of the stretching method (:footcite:t:`SensSchoenfelder2006`).
+
+    For each stretch factor :math:`\varepsilon_k` sampled in
+    :math:`[-\varepsilon_\text{max}, \varepsilon_\text{max}]`, the dilated
+    trace is computed via cubic spline resampling on the compressed/expanded
+    time grid:
+
+    .. math::
+
+        s_k[n] = s_\text{ref}\!\left(\frac{n}{1+\varepsilon_k}\right)
+
+    Interpolation is performed with ``scipy.ndimage.map_coordinates`` (cubic
+    spline, ``order=3``) in a single vectorised batch over all ``nstr`` rows.
 
     :type refcc: :class:`~numpy.ndarray`
     :param refcc: 1-D ndarray — the reference trace to stretch.

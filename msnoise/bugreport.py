@@ -54,7 +54,7 @@ def main(system=False, modules=False, env=False, all=False, show=True):
         output += "\n" + ispresent('tables') + " (pytables)"
         output += "\n" + ispresent('xarray')
         output += "\n" + ispresent('logbook')
-        output += "\n" + ispresent('pycwt')
+        # pycwt vendored into core.signal — no longer a runtime dependency
 
         output += "\n"
         output += "\n" + "Only necessary if you plan to build the doc locally:"

@@ -3,6 +3,8 @@
 __all__ = [
     "build_plot_outfile",
     "create_config_set",
+    "create_project_from_yaml",
+    "export_project_to_yaml",
     "delete_config_set",
     "get_config",
     "get_config_categories_definition",
@@ -208,11 +210,11 @@ def update_config(session, name, value, plugin=None, category='global', set_numb
     else:
         config.value = value
     session.commit()
-    return
+    return config
 
 
 
-def create_config_set(session, set_name):
+def create_config_set(session, set_name, set_number_hint=None):
     """
     Create a configuration set for a workflow step.
 
@@ -233,6 +235,16 @@ def create_config_set(session, set_name):
     config_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config', f'config_{set_name}.csv')
     if not os.path.exists(config_file):
         return None
+
+    # If caller hints a set_number and rows already exist for it, reuse — don't duplicate.
+    if set_number_hint is not None:
+        from sqlalchemy import func as _f
+        existing_count = session.query(_f.count(Config.ref)).filter(
+            Config.category == set_name,
+            Config.set_number == set_number_hint,
+        ).scalar()
+        if existing_count:
+            return set_number_hint
 
     # Find the next available set_number for this category
     max_set_number = session.query(func.max(Config.set_number)).filter(
@@ -268,6 +280,339 @@ def create_config_set(session, set_name):
     session.commit()
     return next_set_number
 
+
+
+def create_project_from_yaml(session, yaml_path):
+    """Seed a freshly-initialised database from a **project YAML** file.
+
+    The project YAML uses ``category_N`` keys so that multiple config sets of
+    the same category are unambiguous.  Each entry may declare an ``after``
+    field (string or list of strings) naming the ``category_N`` steps that
+    must precede it; one :class:`~msnoise.msnoise_table_def.WorkflowLink` row
+    is created per ``after`` entry.  Steps whose ``after`` target is absent
+    from the YAML produce a warning instead of an error, so partial YAMLs and
+    incremental DB builds are both supported.
+
+    Example::
+
+        msnoise_project_version: 1
+
+        global_1:
+          startdate: "2013-04-01"
+          enddate:   "2014-10-31"
+
+        preprocess_1:
+          after: global_1
+          cc_sampling_rate: 20.0
+
+        cc_1:
+          after: preprocess_1
+          cc_type_single_station_AC: PCC
+          whitening: "N"
+
+        filter_1:
+          after: cc_1          # single parent
+          freqmin: 1.0
+          freqmax: 2.0
+          AC: "Y"
+
+        filter_2:
+          after: cc_1          # fan-out from the same cc step
+          freqmin: 0.5
+          freqmax: 1.0
+          AC: "Y"
+
+        stack_1:
+          after: [filter_1, filter_2]
+          mov_stack: "(('2D','1D'))"
+
+        refstack_1:
+          after: [filter_1, filter_2]   # sibling of stack, not child
+          ref_begin: "2013-04-01"
+          ref_end:   "2014-10-31"
+
+        mwcs_1:
+          after: [stack_1, refstack_1]   # list: requires both parents
+          freqmin: 1.0
+          freqmax: 2.0
+
+    :param session: SQLAlchemy session (from :func:`~msnoise.core.db.connect`).
+    :param yaml_path: Path to a project YAML file.
+    :returns: ``(created_steps, warnings)`` — list of ``category_N`` strings
+        created and list of warning strings for missing ``after`` targets.
+    :raises ValueError: if the YAML is missing ``msnoise_project_version`` or
+        a key is not in ``category_N`` format.
+    """
+    import re
+    import logging
+    import yaml
+    from ..core.workflow import create_workflow_step, create_workflow_link
+
+    logger = logging.getLogger(__name__)
+
+    with open(yaml_path, encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+
+    if doc.get("msnoise_project_version") != 1:
+        raise ValueError(
+            f"{yaml_path!r} is not a project YAML "
+            f"(missing or wrong msnoise_project_version). "
+            f"Note: MSNoiseParams.to_yaml() produces a per-lineage YAML; "
+            f"use a project YAML with 'category_N' keys instead."
+        )
+
+    _SKIP = {"msnoise_project_version", "generated", "description", "data_sources", "stations"}
+    _KEY_RE = re.compile(r"^(?P<category>.+)_(?P<set_number>\d+)$")
+
+    # Parse entries, preserving YAML order (insertion order in py3.7+ dicts).
+    entries = []       # [(yaml_key, category, set_number_hint, after_list, overrides)]
+    for key, body in doc.items():
+        if key in _SKIP:
+            continue
+        m = _KEY_RE.match(key)
+        if not m:
+            raise ValueError(
+                f"Project YAML key {key!r} is not in 'category_N' format."
+            )
+        body = body or {}
+        after_raw = body.pop("after", None)
+        after_list = (
+            [after_raw] if isinstance(after_raw, str)
+            else list(after_raw) if after_raw
+            else []
+        )
+        entries.append((key, m.group("category"), int(m.group("set_number")),
+                        after_list, body))
+
+    # Pass 1: create config sets and workflow steps, collect step objects.
+    step_by_yaml_key = {}   # yaml_key → WorkflowStep
+    created_steps = []
+    warnings = []
+
+    for yaml_key, category, _set_number_hint, _after, overrides in entries:
+        set_number = create_config_set(session, category, set_number_hint=_set_number_hint)
+        if set_number is None:
+            w = f"No config CSV for category {category!r} (key {yaml_key!r}) — skipped."
+            warnings.append(w)
+            logger.warning(w)
+            continue
+        for key, value in overrides.items():
+            if isinstance(value, list):
+                if value and isinstance(value[0], (list, tuple)):
+                    value = str(tuple(tuple(v) for v in value))
+                else:
+                    value = ",".join(str(v) for v in value)
+            result = update_config(session, key, str(value),
+                                   category=category, set_number=set_number)
+            if result is None:
+                w = f"{yaml_key!r}: unknown key {key!r} — ignored (typo?)."
+                warnings.append(w)
+                logger.warning(w)
+        step = create_workflow_step(
+            session, f"{category}_{set_number}", category, set_number,
+            description=f"Created from {yaml_path}",
+        )
+        step_by_yaml_key[yaml_key] = step
+        created_steps.append(f"{category}_{set_number}")
+
+    # Pass 2: create links from after declarations.
+    for yaml_key, _cat, _sn, after_list, _overrides in entries:
+        if yaml_key not in step_by_yaml_key:
+            continue   # step was skipped (no CSV)
+        to_step = step_by_yaml_key[yaml_key]
+        for parent_key in after_list:
+            if parent_key not in step_by_yaml_key:
+                w = (f"Link {parent_key!r} → {yaml_key!r}: "
+                     f"{parent_key!r} not found in this YAML — "
+                     f"add the link manually via the admin UI.")
+                warnings.append(w)
+                logger.warning(w)
+                continue
+            from_step = step_by_yaml_key[parent_key]
+            create_workflow_link(session, from_step.step_id, to_step.step_id)
+
+    # Pass 3: data sources
+    created_ds_ids = []
+    for ds_dict in doc.get("data_sources", []):
+        from ..core.stations import add_data_source
+        ds = add_data_source(
+            session,
+            name=ds_dict["name"],
+            uri=ds_dict.get("uri", ""),
+            data_structure=ds_dict.get("data_structure", "SDS"),
+            auth_env=ds_dict.get("auth_env", "MSNOISE"),
+        )
+        created_ds_ids.append(ds.ref)
+
+    # Pass 4: stations — endpoint fetch (level=response recommended so that
+    # import_stationxml saves responses to response_path automatically) or
+    # explicit list (same format as MSNoiseResult bundle provenance export,
+    # so bundle provenance can be copy-pasted directly into a project YAML).
+    stations_section = doc.get("stations")
+    if stations_section:
+        from ..core.stations import import_stationxml, update_station
+        if isinstance(stations_section, dict):
+            endpoint = stations_section.get("station_endpoint")
+            if endpoint:
+                try:
+                    created_s, updated_s, _ = import_stationxml(session, endpoint)
+                    logger.info(
+                        f"Stations via endpoint: {created_s} created, "
+                        f"{updated_s} updated."
+                    )
+                except Exception as e:
+                    w = f"station_endpoint fetch failed: {e}"
+                    warnings.append(w)
+                    logger.warning(w)
+        elif isinstance(stations_section, list):
+            for s in stations_section:
+                update_station(
+                    session,
+                    net=s["net"], sta=s["sta"],
+                    X=s["X"], Y=s["Y"],
+                    altitude=s.get("altitude", 0.0),
+                    coordinates=s.get("coordinates", "DEG"),
+                    used=s.get("used", True),
+                )
+
+    # Pass 4b: if YAML declared datasources, assign the first one to all
+    # stations whose data_source_id is still NULL (installer default).
+    if created_ds_ids:
+        from ..msnoise_table_def import Station
+        target_ds_id = created_ds_ids[0]
+        stations = session.query(Station).filter(Station.data_source_id == None).all()
+        for sta in stations:
+            sta.data_source_id = target_ds_id
+        session.commit()
+        if len(created_ds_ids) > 1:
+            w = (f"Multiple data_sources declared; assigned datasource id={target_ds_id} "
+                 f"to all stations. Update manually for per-station assignment.")
+            warnings.append(w)
+            logger.warning(w)
+
+    return created_steps, warnings
+
+
+def export_project_to_yaml(session, yaml_path, only_non_defaults=True):
+    """Snapshot the current project DB state as a **project YAML** file.
+
+    The inverse of :func:`create_project_from_yaml`.  Reads all active
+    :class:`~msnoise.msnoise_table_def.WorkflowStep` rows, their config sets,
+    the :class:`~msnoise.msnoise_table_def.WorkflowLink` topology, all
+    :class:`~msnoise.msnoise_table_def.DataSource` rows, and all
+    :class:`~msnoise.msnoise_table_def.Station` rows, and writes a
+    ``msnoise_project_version: 1`` YAML that can be re-applied with
+    ``msnoise db init --from-yaml``.
+
+    :param session: SQLAlchemy session.
+    :param yaml_path: Destination path for the YAML file.
+    :param only_non_defaults: When ``True`` (default) only keys whose value
+        differs from the CSV default are written, keeping the file minimal.
+        Set to ``False`` to write every key explicitly.
+    :returns: Path string of the written file.
+    """
+    import os
+    import csv
+    import datetime
+    import yaml
+    from ..core.workflow import get_workflow_steps, get_workflow_links, get_workflow_order
+    from ..msnoise_table_def import DataSource, Station
+
+    # ── load CSV defaults once ────────────────────────────────────────────
+    _config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config")
+
+    def _csv_defaults(category):
+        path = os.path.join(_config_dir, f"config_{category}.csv")
+        if not os.path.exists(path):
+            return {}
+        with open(path, newline="", encoding="utf-8") as fh:
+            return {row["name"]: row["default"] for row in csv.DictReader(fh)}
+
+    # ── build step_name → parent step_names map from WorkflowLinks ───────
+    steps = get_workflow_steps(session)
+    links = get_workflow_links(session)
+
+    step_by_id = {s.step_id: s for s in steps}
+    parents_of = {s.step_name: [] for s in steps}   # step_name → [parent step_names]
+    for lnk in links:
+        child = step_by_id.get(lnk.to_step_id)
+        parent = step_by_id.get(lnk.from_step_id)
+        if child and parent:
+            parents_of[child.step_name].append(parent.step_name)
+
+    # ── sort steps by canonical workflow order ────────────────────────────
+    _order = get_workflow_order()
+    def _sort_key(s):
+        try:
+            return (_order.index(s.category), s.set_number)
+        except ValueError:
+            return (len(_order), s.set_number)
+
+    steps_sorted = sorted(steps, key=_sort_key)
+
+    # ── build YAML document (ordered dict preserves insertion order) ──────
+    doc = {
+        "msnoise_project_version": 1,
+        "generated": datetime.datetime.now(datetime.timezone.utc).isoformat(
+            timespec="seconds") + "Z",
+    }
+
+    for step in steps_sorted:
+        entry = {}
+
+        # after
+        pnames = sorted(parents_of.get(step.step_name, []))
+        if len(pnames) == 1:
+            entry["after"] = pnames[0]
+        elif len(pnames) > 1:
+            entry["after"] = pnames
+
+        # config values
+        defaults = _csv_defaults(step.category)
+        rows = get_config_set_details(session, step.category, step.set_number,
+                                      format="list")
+        for row in rows:
+            name, value = row["name"], row["value"]
+            if only_non_defaults and value == defaults.get(name):
+                continue
+            entry[name] = value
+
+        doc[step.step_name] = entry
+
+    # ── data sources ──────────────────────────────────────────────────────
+    data_sources = session.query(DataSource).all()
+    if data_sources:
+        doc["data_sources"] = [
+            {
+                "name":           ds.name,
+                "uri":            ds.uri or "",
+                "data_structure": ds.data_structure or "SDS",
+                "auth_env":       ds.auth_env or "MSNOISE",
+            }
+            for ds in data_sources
+        ]
+
+    # ── stations ──────────────────────────────────────────────────────────
+    stations = session.query(Station).order_by(Station.net, Station.sta).all()
+    if stations:
+        doc["stations"] = [
+            {
+                "net":            s.net,
+                "sta":            s.sta,
+                "X":              s.X,
+                "Y":              s.Y,
+                "altitude":       s.altitude,
+                "coordinates":    s.coordinates or "DEG",
+                "data_source_id": 0,   # index into data_sources list above
+            }
+            for s in stations
+        ]
+
+    with open(yaml_path, "w", encoding="utf-8") as fh:
+        yaml.dump(doc, fh, default_flow_style=False, sort_keys=False,
+                  allow_unicode=True)
+
+    return yaml_path
 
 
 def delete_config_set(session, set_name, set_number):

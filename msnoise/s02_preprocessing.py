@@ -27,7 +27,7 @@ from .core.db import connect, get_logger
 from .core.workflow import get_next_lineage_batch, is_next_job_for_step, massive_update_job
 from .core.signal import preload_instrument_responses, save_preprocessed_streams
 from .core.stations import resolve_data_source, get_station
-from .core.fdsn import is_remote_source, fetch_and_preprocess
+from .core.fdsn import is_remote_source, fetch_and_preprocess, build_client, FDSNConnectionError
 from .core.preprocessing import preprocess
 
 CATEGORY = "preprocess"
@@ -45,6 +45,10 @@ def main(loglevel="INFO"):
     logger.info('*** Starting: Preprocessing Step ***')
 
     db = connect()
+
+    # Cache FDSN clients keyed by DataSource.ref — built lazily, reused across days.
+    # Avoids re-opening HTTP connections for every day's batch.
+    _client_cache = {}
 
     while is_next_job_for_step(db, step_category=CATEGORY):
         batch = get_next_lineage_batch(db, step_category=CATEGORY,
@@ -77,35 +81,68 @@ def main(loglevel="INFO"):
             else:
                 responses = None
 
-            # ── Detect DataSource scheme from the first job's station ────────
-            first_net, first_sta, _ = jobs[0].pair.split(".")
-            first_station = get_station(db, first_net, first_sta)
-            ds = resolve_data_source(db, first_station)
-            remote = is_remote_source(ds.uri)
+            # ── Resolve DataSource per station — group by (ds_ref, remote) ──
+            # A batch may contain stations from different DataSources (e.g.
+            # some from a local SDS archive, others from an FDSN service).
+            # Resolving only from the first job was wrong for mixed batches.
+            from collections import defaultdict
+            _jobs_by_ds = defaultdict(list)
+            for _job in jobs:
+                _net, _sta, _ = _job.pair.split(".")
+                _sta_obj = get_station(db, _net, _sta)
+                _ds = resolve_data_source(db, _sta_obj)
+                _jobs_by_ds[(_ds.ref, is_remote_source(_ds.uri), _ds)].append(_job)
 
-            if remote:
-                # ── FDSN / EIDA path ─────────────────────────────────────────
-                logger.info(
-                    f"DataSource {ds.name!r} is remote ({ds.uri}) — "
-                    f"fetching via FDSN/EIDA"
-                )
-                stream, done_jobs, failed_jobs = fetch_and_preprocess(
-                    db, jobs, goal_day, params,
-                    responses=responses, loglevel=loglevel
-                )
-            else:
-                # ── Local / SDS path ─────────────────────────────────────────
-                stations = [job.pair for job in jobs]
-                logger.debug(f"Processing stations (local): {stations}")
-                logger.debug(f"Components: {components}")
+            from obspy import Stream as _Stream
+            stream     = _Stream()
+            done_jobs  = []
+            failed_jobs = []
 
-                stream = preprocess(stations, components, goal_day, params,
-                                    responses=responses, loglevel=loglevel)
-
-                ids        = {f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}"
-                              for tr in stream}
-                done_jobs  = [j for j in jobs if j.pair in ids]
-                failed_jobs = [j for j in jobs if j.pair not in ids]
+            for (_ds_ref, _remote, _ds), _ds_jobs in _jobs_by_ds.items():
+                if _remote:
+                    # ── FDSN / EIDA path ─────────────────────────────────────
+                    logger.info(
+                        f"DataSource {_ds.name!r} is remote ({_ds.uri}) — "
+                        f"fetching {len(_ds_jobs)} station(s) via FDSN/EIDA"
+                    )
+                    if _ds.ref not in _client_cache:
+                        logger.debug(f"Building FDSN client for DataSource {_ds.name!r}")
+                        _client_cache[_ds.ref] = build_client(_ds)
+                    for _attempt in range(2):
+                        try:
+                            _st, _done, _failed = fetch_and_preprocess(
+                                db, _ds_jobs, goal_day, params,
+                                responses=responses, loglevel=loglevel,
+                                client=_client_cache[_ds.ref],
+                            )
+                            break
+                        except FDSNConnectionError as _e:
+                            if _attempt == 0:
+                                logger.warning(
+                                    f"FDSN connection lost for {_ds.name!r} "
+                                    f"({_e}), rebuilding client and retrying."
+                                )
+                                _client_cache[_ds.ref] = build_client(_ds)
+                            else:
+                                logger.error(
+                                    f"FDSN connection failed again after rebuild "
+                                    f"for {_ds.name!r} on {goal_day} — marking jobs Failed."
+                                )
+                                _st, _done, _failed = _Stream(), [], _ds_jobs
+                    stream      += _st
+                    done_jobs   += _done
+                    failed_jobs += _failed
+                else:
+                    # ── Local / SDS path ─────────────────────────────────────
+                    _stations = [j.pair for j in _ds_jobs]
+                    logger.debug(f"Processing stations (local, DataSource {_ds.name!r}): {_stations}")
+                    _st = preprocess(_stations, components, goal_day, params,
+                                     responses=responses, loglevel=loglevel)
+                    _ids = {f"{tr.stats.network}.{tr.stats.station}.{tr.stats.location}"
+                            for tr in _st}
+                    done_jobs   += [j for j in _ds_jobs if j.pair in _ids]
+                    failed_jobs += [j for j in _ds_jobs if j.pair not in _ids]
+                    stream += _st
 
             # ── Write per-station output files ───────────────────────────────
             if stream:

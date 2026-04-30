@@ -56,8 +56,10 @@ def validate_stack_data(dataset, stack_type="reference"):
     if data.size == 0:
         return False, f"Empty dataset in {stack_type} stack"
 
-    nan_count = np.isnan(data.values).sum()
-    total_points = data.values.size
+    # Use xarray .isnull() so this works on both numpy and dask-backed arrays.
+    # data.values on a dask array would load the entire dataset into RAM.
+    nan_count = int(data.isnull().sum().values)
+    total_points = data.size
 
     if nan_count == total_points:
         return False, f"{stack_type.capitalize()} stack contains only NaN values"
@@ -298,27 +300,176 @@ def smoothCFS(cfs, scales, dt, ns, nt):
 
 
 
+
+# ── Wavelet classes and CWT ──────────────────────────────────────────────────
+# Self-contained implementation of the mother wavelets and CWT used by the
+# WCT pipeline (s08_compute_wct).  Algorithm: :footcite:t:`TorrenceCompo1998`,
+# Tables 1–2.
+
+class _Morlet:
+    """Morlet wavelet (:footcite:t:`TorrenceCompo1998`, Table 1, row 1).
+
+    :param f0: Central angular frequency. Default 6.
+    """
+    name = "Morlet"
+
+    def __init__(self, f0=6):
+        self.f0 = float(f0)
+        self.dofmin = 2
+        if f0 == 6:
+            self.cdelta, self.gamma, self.deltaj0 = 0.776, 2.32, 0.60
+        else:
+            self.cdelta = self.gamma = self.deltaj0 = -1
+
+    def psi_ft(self, f):
+        """Fourier transform of the Morlet wavelet."""
+        return np.pi ** -0.25 * np.exp(-0.5 * (f - self.f0) ** 2)
+
+    def flambda(self):
+        """Fourier wavelength (T&C eq. 1)."""
+        return (4 * np.pi) / (self.f0 + np.sqrt(2 + self.f0 ** 2))
+
+    def coi(self):
+        """e-Folding time (T&C Table 1)."""
+        return 1.0 / np.sqrt(2)
+
+    def smooth(self, W, dt, dj, scales):
+        """Smooth CWT coefficients (time + scale axes) for coherence."""
+        from scipy.signal import convolve2d
+        m, n = W.shape
+        N = int(2 ** np.ceil(np.log2(n)))
+        k = 2 * np.pi * np.fft.fftfreq(N)
+        snorm = scales / dt
+        F = np.exp(-0.5 * (snorm[:, np.newaxis] ** 2) * k ** 2)
+        T = np.fft.ifft(F * np.fft.fft(W, n=N, axis=1), axis=1)[:, :n]
+        if np.isreal(W).all():
+            T = T.real
+        wsize = self.deltaj0 / dj * 2
+        win = np.ones(max(1, int(np.round(wsize))))
+        win /= win.sum()
+        T = convolve2d(T, win[:, np.newaxis], "same")
+        return T
+
+
+class _Paul:
+    """Paul wavelet of order *m* (:footcite:t:`TorrenceCompo1998`, Table 1, row 2)."""
+    name = "Paul"
+
+    def __init__(self, m=4):
+        self.m = int(m)
+        self.dofmin = 2
+        if m == 4:
+            self.cdelta, self.gamma, self.deltaj0 = 1.132, 1.17, 1.50
+        else:
+            self.cdelta = self.gamma = self.deltaj0 = -1
+
+    def psi_ft(self, f):
+        m = self.m
+        norm = 2 ** m / np.sqrt(m * np.prod(np.arange(2, 2 * m, dtype=float)))
+        return norm * f ** m * np.exp(-f) * (f > 0)
+
+    def flambda(self):
+        return 4 * np.pi / (2 * self.m + 1)
+
+    def coi(self):
+        return np.sqrt(2)
+
+
+class _DOG:
+    """Derivative-of-Gaussian wavelet of order *m* (:footcite:t:`TorrenceCompo1998`, Table 1, row 3)."""
+    name = "DOG"
+
+    def __init__(self, m=2):
+        from scipy.special import gamma as _gamma
+        self.m = int(m)
+        self.dofmin = 1
+        self._norm = 1.0 / np.sqrt(_gamma(m + 0.5))
+        if m == 2:
+            self.cdelta, self.gamma, self.deltaj0 = 3.541, 1.43, 1.40
+        elif m == 6:
+            self.cdelta, self.gamma, self.deltaj0 = 1.966, 1.37, 0.97
+        else:
+            self.cdelta = self.gamma = self.deltaj0 = -1
+
+    def psi_ft(self, f):
+        return -(1j ** self.m) * self._norm * f ** self.m * np.exp(-0.5 * f ** 2)
+
+    def flambda(self):
+        return 2 * np.pi / np.sqrt(self.m + 0.5)
+
+    def coi(self):
+        return 1.0 / np.sqrt(2)
+
+
+class _MexicanHat(_DOG):
+    """Mexican hat wavelet (DOG with m=2)."""
+    name = "MexicanHat"
+
+    def __init__(self):
+        super().__init__(m=2)
+
+
+def _cwt(signal, dt, dj=1 / 12, s0=-1, J=-1, wavelet=None, freqs=None):
+    """Continuous wavelet transform (:footcite:t:`TorrenceCompo1998`).
+
+    Uses FFT-domain convolution for efficiency.
+
+    :param signal: 1-D input array.
+    :param dt: Sampling interval (seconds).
+    :param dj: Scale spacing. Default 1/12.
+    :param s0: Smallest scale. Default ``2*dt / wavelet.flambda()``.
+    :param J: Number of scales minus one. Default derived from signal length.
+    :param wavelet: Mother wavelet instance. Defaults to ``_Morlet(6)``.
+    :param freqs: Optional custom frequency array (Hz); overrides dj/s0/J.
+    :returns: ``(W, sj, freqs, coi, signal_ft, ftfreqs)``
+    """
+    if wavelet is None:
+        wavelet = _Morlet()
+    n0 = len(signal)
+    if freqs is not None:
+        sj = 1.0 / (wavelet.flambda() * np.asarray(freqs))
+    else:
+        if s0 == -1:
+            s0 = 2 * dt / wavelet.flambda()
+        if J == -1:
+            J = int(np.round(np.log2(n0 * dt / s0) / dj))
+        sj = s0 * 2 ** (np.arange(0, J + 1) * dj)
+        freqs = 1.0 / (wavelet.flambda() * sj)
+    N = int(2 ** np.ceil(np.log2(n0)))
+    signal_ft = np.fft.fft(signal, n=N)
+    ftfreqs = 2 * np.pi * np.fft.fftfreq(N, dt)
+    sj_col = sj[:, np.newaxis]
+    psi_ft_bar = ((sj_col * ftfreqs[1] * N) ** 0.5
+                  * np.conj(wavelet.psi_ft(sj_col * ftfreqs)))
+    W = np.fft.ifft(signal_ft * psi_ft_bar, axis=1)
+    sel = ~np.isnan(W).all(axis=1)
+    sj, freqs, W = sj[sel], freqs[sel], W[sel, :n0]
+    coi = (wavelet.flambda() * wavelet.coi() * dt
+           * (n0 / 2 - np.abs(np.arange(n0) - (n0 - 1) / 2)))
+    ft_out = signal_ft[1: N // 2] / N ** 0.5
+    ftfreqs_out = ftfreqs[1: N // 2] / (2 * np.pi)
+    return W, sj, freqs, coi, ft_out, ftfreqs_out
+
 def get_wavelet_type(wavelet_type):
-    """Return a :mod:`pycwt` wavelet object for the given type/parameter pair.
+    """Return an internal wavelet object for the given type/parameter pair.
 
     :param wavelet_type: Tuple ``(name, param)`` or ``(name,)``.
         Supported names: ``"Morlet"``, ``"Paul"``, ``"DOG"``, ``"MexicanHat"``.
-    :returns: Corresponding :mod:`pycwt` wavelet instance.
+    :returns: Corresponding wavelet instance (_Morlet, _Paul, _DOG, _MexicanHat).
     """
-    import pycwt as wavelet
     defaults = {"Morlet": 6, "Paul": 4, "DOG": 2, "MexicanHat": 2}
     name = wavelet_type[0]
+    if name not in defaults:
+        raise ValueError(f"Unknown wavelet type: {name!r}")
     param = float(wavelet_type[1]) if len(wavelet_type) == 2 else defaults[name]
     if name == "Morlet":
-        return wavelet.Morlet(param)
+        return _Morlet(param)
     elif name == "Paul":
-        return wavelet.Paul(param)
+        return _Paul(int(param))
     elif name == "DOG":
-        return wavelet.DOG(param)
+        return _DOG(int(param))
     elif name == "MexicanHat":
-        return wavelet.MexicanHat()
-    else:
-        raise ValueError(f"Unknown wavelet type: {name!r}")
+        return _MexicanHat()
 
 
 
@@ -339,21 +490,20 @@ def prepare_ref_wct(trace_ref, fs, ns=3, nt=0.25, vpo=12,
     :param freqmin: Lowest frequency of interest (Hz).
     :param freqmax: Highest frequency of interest (Hz).
     :param nptsfreq: Number of frequency points.
-    :param mother: pycwt wavelet object (from :func:`get_wavelet_type`).
-        If ``None``, defaults to ``Morlet(6)``.
+    :param mother: Wavelet instance from :func:`get_wavelet_type`.
+        If ``None``, defaults to ``_Morlet(6)``.
     :returns: ``(cwt_ref, cfs1, scales, freqs, coi, invscales, dt, freqlim)``
         — an opaque tuple to pass directly to :func:`apply_wct`.
     """
-    import pycwt as wavelet_lib
     if mother is None:
-        mother = wavelet_lib.Morlet(6)
+        mother = _Morlet(6)
     nx = np.size(trace_ref)
     x_ref = np.transpose(trace_ref)
     dt = 1.0 / fs
     dj = 1.0 / vpo
     s0 = 2 * dt
     freqlim = np.linspace(freqmax, freqmin, num=nptsfreq, endpoint=True)
-    cwt_ref, scales, freqs, coi, _, _ = wavelet_lib.cwt(
+    cwt_ref, scales, freqs, coi, _, _ = _cwt(
         x_ref, dt, dj, s0, -1, mother, freqs=freqlim)
     scales_col = np.array([[kk] for kk in scales])
     invscales = np.kron(np.ones((1, nx)), 1.0 / scales_col)
@@ -365,6 +515,10 @@ def prepare_ref_wct(trace_ref, fs, ns=3, nt=0.25, vpo=12,
 def apply_wct(ref_wct_data, trace_current, ns=3, nt=0.25):
     """Compute WCT for one current-day trace given pre-computed reference data.
 
+    Implements the wavelet cross-spectrum following :footcite:t:`Grinsted2004`.
+    The time-delay ``WXdt = phase(WXspec) / (2πf)`` follows
+    :footcite:t:`Mao2020` (their eq. 1).
+
     :param ref_wct_data: Tuple returned by :func:`prepare_ref_wct`.
     :param trace_current: Current-day signal (1-D numpy array, same length as ref).
     :param ns: Scale-axis smoothing parameter (must match the value used in
@@ -372,16 +526,13 @@ def apply_wct(ref_wct_data, trace_current, ns=3, nt=0.25):
     :param nt: Time-axis smoothing parameter (idem).
     :returns: ``(WXamp, WXspec, WXangle, Wcoh, WXdt, freqs, coi)``
     """
-    import pycwt as wavelet_lib
     cwt_ref, cfs1, scales_col, freqs, coi, invscales, dt, freqlim = ref_wct_data
     x_cur = np.transpose(trace_current)
-    # Re-derive wavelet params consistent with the reference CWT
     dj = 1.0 / (scales_col.shape[0] - 1) if scales_col.shape[0] > 1 else 1.0
     s0 = 2 * dt
     nx = np.size(trace_current)
-    # Use the same freqlim from the reference call so scales are identical
-    cwt_cur, _, _, _, _, _ = wavelet_lib.cwt(
-        x_cur, dt, dj, s0, -1, wavelet_lib.Morlet(6), freqs=freqlim)
+    cwt_cur, _, _, _, _, _ = _cwt(
+        x_cur, dt, dj, s0, -1, _Morlet(6), freqs=freqlim)
     # Recompute invscales for current length (same as ref if length unchanged)
     inv_cur = np.kron(np.ones((1, nx)), 1.0 / scales_col)
     power_cur = (inv_cur * abs(cwt_cur) ** 2).astype(complex)
@@ -406,7 +557,8 @@ def apply_wct(ref_wct_data, trace_current, ns=3, nt=0.25):
 
 def xwt(trace_ref, trace_current, fs, ns=3, nt=0.25, vpo=12,
         freqmin=0.1, freqmax=8.0, nptsfreq=100, wavelet_type=("Morlet", 6.)):
-    """Wavelet Coherence Transform (WCT) between two time series.
+    """Wavelet Coherence Transform (WCT) between two time series
+    (:footcite:t:`Grinsted2004`; traveltime estimation: :footcite:t:`Mao2020`).
 
     Convenience wrapper around :func:`prepare_ref_wct` + :func:`apply_wct`.
     Use those two functions directly in hot loops (Mode A fixed-REF) to avoid
@@ -433,8 +585,13 @@ def xwt(trace_ref, trace_current, fs, ns=3, nt=0.25, vpo=12,
 
 def compute_wct_dtt(freqs, tvec, WXamp, Wcoh, delta_t, lag_min=5, coda_cycles=20,
                     mincoh=0.5, maxdt=0.2, min_nonzero=0.25, freqmin=0.1, freqmax=2.0):
-    """
-    Compute dv/v and associated errors from wavelet coherence transform results.
+    """Compute dv/v and associated errors from WCT results following
+    :footcite:t:`Mao2020`.
+
+    For each frequency band, fits a weighted linear regression
+    ``delta_t(t) = -(dv/v) * t`` using log-amplitude weights from the
+    cross-wavelet spectrum (their eq. 3–4).
+
 
     :param freqs: Frequency values from the WCT.
     :param tvec: Time axis.
@@ -798,24 +955,210 @@ def make_same_length(st):
 # ============================================================
 
 
-def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
-          goal_sampling_rate=20.0):
+
+def _morlet_wavelet(M, s, w=5.0):
+    """Complex Morlet wavelet (L2-normalised) for use in :func:`tfpws_stack`.
+
+    :param M: Number of samples.
+    :param s: Scale parameter (controls dilation).
+    :param w: Central angular frequency (default 5.0).
+    :returns: Complex 1-D array of length *M*.
     """
+    x = np.linspace(-10, 10, M)
+    wav = np.exp(1j * w * x / s) * np.exp(-0.5 * (x / s) ** 2)
+    return wav / (np.pi ** 0.25 * np.sqrt(s))
+
+
+def tfpws_stack(data, fs, freqmin, freqmax, power=2, nscales=20):
+    """Time-frequency phase-weighted stack (Schimmel & Gallart 2007).
+
+    Computes the CWT of every input trace with a complex Morlet wavelet at
+    *nscales* log-spaced scales, derives the instantaneous-phase coherence
+    :math:`c(a, t)` across traces at each (scale *a*, lag *t*) point,
+    averages over scales to produce a per-lag weight :math:`w(t)`, then
+    returns the linear mean multiplied by :math:`w(t)^{\\textit{power}}`.
+
+    The Morlet wavelet used here is the standard complex Morlet in the
+    convolution (not the FFT-based :class:`_Morlet` used by the WCT
+    pipeline):
+
+    .. math::
+
+        \\psi_{M,s}(t) =
+            \\frac{1}{\\pi^{1/4} \\sqrt{s}}\\,
+            e^{i\\omega_0 t/s}\\,
+            e^{-t^2/(2s^2)}, \\qquad \\omega_0 = 5
+
+    The scale–frequency relationship is :math:`f = \\omega_0 f_s / (2\\pi s)`,
+    so scales are chosen as
+    :math:`s_k = \\omega_0 / (2\\pi f_k / f_s)` for *nscales* frequencies
+    :math:`f_k` log-spaced in [*freqmin*, *freqmax*].
+
+    The weight is:
+
+    .. math::
+
+        w(t) = \\left[
+            \\frac{1}{A} \\sum_{k=1}^{A}
+            \\frac{1}{N} \\left|
+                \\sum_{j=1}^{N} e^{i\\,\\arg\\mathcal{W}_j(s_k, t)}
+            \\right|
+        \\right]^{\\textit{power}}
+
+    where :math:`\\mathcal{W}_j(s_k, t)` is the CWT coefficient of trace
+    *j* at scale *k* and lag *t*, and *A* = *nscales*.
+
+    .. note::
+
+        This function is called by :func:`stack` when
+        ``stack_method="tfpws"``.  Prefer that entry-point in production
+        code; call this function directly only when you need to tune
+        *nscales* or *power* without going through the full stack
+        dispatcher.
+
+    :param data: 2-D array of shape ``(N_traces, N_lags)``.  NaN rows
+        must be removed before calling (handled by :func:`stack`).
+    :param fs: Sampling rate of the CCF traces (Hz).
+    :param freqmin: Lower frequency bound for the CWT scale range (Hz).
+        Should match the parent filter's *freqmin*.
+    :param freqmax: Upper frequency bound for the CWT scale range (Hz).
+        Should match the parent filter's *freqmax*.
+    :param power: Exponent applied to the coherence weight (default 2).
+        Equivalent to the ``pws_power`` parameter in :func:`stack`.
+    :param nscales: Number of log-spaced CWT scales (default 20).
+    :returns: 1-D array of length ``N_lags``.
+
+    .. footcite:p:`Schimmel2007`
+    """
+    from scipy.signal import fftconvolve
+
+    N, T = data.shape
+    W = 5.0
+    freqs  = np.logspace(np.log10(freqmin), np.log10(freqmax), nscales)
+    scales = W / (2.0 * np.pi * freqs / fs)
+
+    phase_sum = np.zeros((nscales, T), dtype=complex)
+    for trace in data:
+        for k, s in enumerate(scales):
+            M = max(int(10 * s), 3) | 1
+            wav = _morlet_wavelet(M, s, w=W)
+            coeffs = fftconvolve(trace, wav[::-1].conj(), mode="same")
+            phase_sum[k] += np.exp(1j * np.angle(coeffs))
+
+    coh    = np.abs(phase_sum) / N
+    weight = coh.mean(axis=0) ** power
+    return data.mean(axis=0) * weight
+
+def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
+          goal_sampling_rate=20.0, freqmin=1.0, freqmax=10.0,
+          tfpws_nscales=20):
+    """Stack an array of CCF traces into a single representative trace.
+
+    Three methods are available, selected via *stack_method*:
+
+    **Linear stack** (``"linear"``)
+        The arithmetic mean across all input traces:
+
+        .. math::
+
+            s(t) = \\frac{1}{N} \\sum_{j=1}^{N} d_j(t)
+
+        Incoherent noise cancels as :math:`1/\\sqrt{N}`.  Fastest and most
+        transparent, but offers no protection against high-amplitude
+        transients (earthquakes, instrumental glitches) that survive
+        pre-processing.
+
+    **Phase-weighted stack** (``"pws"``)
+        Introduced by Schimmel & Paulssen (1997) :footcite:p:`Schimmel1997`.
+        Each sample is weighted by the instantaneous phase coherence
+        :math:`c(t)` of the analytic signal across all traces:
+
+        .. math::
+
+            c(t) = \\frac{1}{N} \\left|
+                \\sum_{j=1}^{N} e^{i\\,\\phi_j(t)}
+            \\right|, \\qquad c(t) \\in [0, 1]
+
+        where :math:`\\phi_j(t) = \\arg\\bigl(d_j(t) + i\\,\\mathcal{H}\\{d_j\\}(t)\\bigr)`
+        is the instantaneous phase of trace *j* obtained via the Hilbert
+        transform :math:`\\mathcal{H}`.  The coherence is smoothed with a
+        boxcar window of *pws_timegate* seconds before being raised to the
+        power *v* = *pws_power*:
+
+        .. math::
+
+            s(t) = \\frac{1}{N} \\sum_{j=1}^{N} d_j(t) \\cdot c(t)^v
+
+        High-amplitude incoherent transients have random phases across
+        traces, so :math:`c(t) \\approx 0` at those times; coherent
+        arrivals have :math:`c(t) \\approx 1` and are preserved.
+
+    **Time-frequency phase-weighted stack** (``"tfpws"``)
+        The TF extension of PWS by Schimmel & Gallart (2007)
+        :footcite:p:`Schimmel2007`.  Phase coherence is computed in the
+        time-frequency domain via a continuous wavelet transform (CWT)
+        with a complex Morlet wavelet, giving a coherence map
+        :math:`c(a, t)` that is both scale- and time-dependent.
+        Averaging over the *nscales* log-spaced scales spanning
+        [*freqmin*, *freqmax*] Hz yields a single per-lag weight:
+
+        .. math::
+
+            W_j(a, t) = \\mathcal{W}\\{d_j\\}(a, t)
+
+        .. math::
+
+            c(a, t) = \\frac{1}{N} \\left|
+                \\sum_{j=1}^{N} e^{i\\,\\arg W_j(a,t)}
+            \\right|
+
+        .. math::
+
+            w(t) = \\left[
+                \\frac{1}{A} \\sum_{a} c(a, t)
+            \\right]^v, \\qquad
+            s(t) = \\frac{1}{N} \\sum_{j=1}^{N} d_j(t) \\cdot w(t)
+
+        where :math:`A` is the number of scales.  Because coherence is
+        evaluated independently at each scale, tf-PWS is more sensitive
+        to narrow-band coherent arrivals than time-domain PWS.  It is
+        particularly effective for noise autocorrelations where body-wave
+        reflections occupy a limited frequency band
+        (Romero & Schimmel 2018 :footcite:p:`Romero2018`).
+
+        .. note::
+
+            Memory scales as :math:`O(N \\times A \\times T)` complex128.
+            For long CCFs or large archives consider reducing *nscales*
+            (default 20) or chunking pairs outside this function.
+
+    
+
     :type data: :class:`numpy.ndarray`
-    :param data: the data to stack, each row being one CCF
+    :param data: 2-D array of shape ``(N_traces, N_lags)``, each row one CCF.
     :type stack_method: str
-    :param stack_method: either ``linear``: average of all CCF or ``pws`` to
-        compute the phase weigthed stack. If ``pws`` is selected,
-        the function expects the ``pws_timegate`` and ``pws_power``.
+    :param stack_method: ``"linear"``, ``"pws"``, or ``"tfpws"``.
     :type pws_timegate: float
-    :param pws_timegate: PWS time gate in seconds. Width of the smoothing
-         window to convolve with the PWS spectrum.
+    :param pws_timegate: Boxcar smoothing window for the PWS coherence
+        estimate, in seconds (``"pws"`` only).  Default 10 s.
     :type pws_power: float
-    :param pws_power: Power of the PWS weights to be applied to the CCF stack.
+    :param pws_power: Exponent *v* applied to the coherence weight.
+        Larger values increase selectivity.  Shared by ``"pws"`` and
+        ``"tfpws"``.  Default 2.
     :type goal_sampling_rate: float
-    :param goal_sampling_rate: Sampling rate of the CCF array submitted
-    :rtype: :class:`numpy.array`
-    :return: the stacked CCF.
+    :param goal_sampling_rate: Sampling rate of the CCF array (Hz).
+    :type freqmin: float
+    :param freqmin: Lower frequency bound (Hz) for the CWT scale range
+        — ``"tfpws"`` only.  Should match the parent filter's *freqmin*.
+    :type freqmax: float
+    :param freqmax: Upper frequency bound (Hz) for the CWT scale range
+        — ``"tfpws"`` only.  Should match the parent filter's *freqmax*.
+    :type tfpws_nscales: int
+    :param tfpws_nscales: Number of log-spaced CWT scales between
+        *freqmin* and *freqmax* — ``"tfpws"`` only.  Default 20.
+    :rtype: :class:`numpy.ndarray`
+    :return: 1-D stacked CCF of length ``N_lags``, or ``[]`` if no valid
+        (non-NaN) traces are present.
     """
     if len(data) == 0:
         logging.debug("No data to stack.")
@@ -859,6 +1202,17 @@ def stack(data, stack_method="linear", pws_timegate=10.0, pws_power=2,
         for c in data:
             corr += c * coh
         corr /= data.shape[0]
+
+    elif stack_method == "tfpws":
+        corr = tfpws_stack(
+            data, fs=goal_sampling_rate,
+            freqmin=freqmin, freqmax=freqmax,
+            power=pws_power, nscales=tfpws_nscales,
+        )
+
+    else:
+        logging.warning(f"Unknown stack_method {stack_method!r}; falling back to linear.")
+        corr = data.mean(axis=0)
 
     return corr
 
@@ -921,3 +1275,100 @@ def wiener_filt(data, M, N, gap_threshold):
     )
     del filtered_values
     return filtered_data
+
+
+def rolling_mean_nan(arr: "np.ndarray", window: int, min_periods: int = 1) -> "np.ndarray":
+    """O(N) NaN-aware rolling mean along axis 0 using cumulative sums.
+
+    Drop-in replacement for xarray's ``rolling(times=W).mean()`` on a 2-D
+    numpy array.  Complexity is O(N × F) regardless of *window* size —
+    unlike xarray's default implementation which is O(N × W × F) when NaN
+    handling forces a fallback from the cumsum fast-path.
+
+    :param arr:         2-D array of shape ``(T, F)`` (time × taxis).
+    :param window:      Rolling window size (number of time steps).
+    :param min_periods: Minimum number of non-NaN values required to produce
+                        a result; positions with fewer valid values yield NaN.
+    :returns:           Array of same shape and dtype as *arr*.
+    """
+    import numpy as np
+
+    T, F = arr.shape
+
+    # ── validity mask and value fill ──────────────────────────────────────
+    valid  = ~np.isnan(arr)                          # bool  (T, F)
+    filled = np.where(valid, arr, np.float32(0.0))   # float32 — no promotion
+
+    # ── padded cumulative sums ─────────────────────────────────────────────
+    # float32 cumsum is accurate for CCF values in [-1, 1]: worst-case
+    # accumulated rounding error over 30 000 steps < 0.004, negligible.
+    cv = np.empty((T + 1, F), dtype=np.float32)
+    cv[0] = 0.0
+    np.cumsum(filled, axis=0, out=cv[1:])
+    del filled                                        # free early
+
+    # int32 is sufficient: max count = window, well within int32.
+    cc = np.empty((T + 1, F), dtype=np.int32)
+    cc[0] = 0
+    np.cumsum(valid, axis=0, out=cc[1:])
+    del valid                                         # free early
+
+    # ── window sums and counts ─────────────────────────────────────────────
+    i1 = np.arange(1, T + 1)
+    i0 = np.maximum(0, i1 - window)
+
+    win_val = cv[i1] - cv[i0]                        # float32 (T, F)
+    del cv
+    win_cnt = cc[i1] - cc[i0]                        # int32  (T, F)
+    del cc
+
+    # ── masked mean ────────────────────────────────────────────────────────
+    enough   = win_cnt >= min_periods
+    safe_cnt = np.where(win_cnt > 0, win_cnt, np.int32(1))
+    del win_cnt
+    result   = np.where(enough, win_val / safe_cnt, np.float32(np.nan))
+    del win_val, enough, safe_cnt
+    return result.astype(arr.dtype)
+
+
+def rolling_stack(arr: "np.ndarray", window: int,
+                  stack_method: str = "linear",
+                  min_periods: int = 1,
+                  **stack_kwargs) -> "np.ndarray":
+    """Rolling stack along axis 0 using the requested stacking method.
+
+    Dispatches to the appropriate implementation:
+
+    * ``"linear"``:  :func:`rolling_mean_nan` — O(N), constant in window size.
+    * ``"pws"`` / ``"tfpws"``:  sliding-window loop calling :func:`stack`
+      — inherently O(N × W) because phase coherence is non-linear, but
+      avoids xarray overhead and skips all-NaN windows early.
+
+    :param arr:          2-D float32 array ``(T, F)`` — time × taxis.
+    :param window:       Rolling window size in time steps.
+    :param stack_method: ``"linear"``, ``"pws"``, or ``"tfpws"``.
+    :param min_periods:  Minimum valid (non-NaN) traces required; positions
+                         with fewer yield NaN.
+    :param stack_kwargs: Extra keyword arguments forwarded to :func:`stack`
+                         (``pws_timegate``, ``pws_power``, ``freqmin``, …).
+    :returns:            Array of same shape and dtype as *arr*.
+    """
+    import numpy as np
+
+    if stack_method == "linear":
+        return rolling_mean_nan(arr, window, min_periods)
+
+    T, F = arr.shape
+    result = np.full_like(arr, np.nan)
+
+    for i in range(T):
+        start = max(0, i - window + 1)
+        window_data = arr[start:i + 1]
+        # Drop whole-trace NaN rows (days with no data)
+        valid_rows = ~np.all(np.isnan(window_data), axis=1)
+        window_valid = window_data[valid_rows]
+        if len(window_valid) < min_periods:
+            continue
+        result[i] = stack(window_valid, stack_method=stack_method, **stack_kwargs)
+
+    return result

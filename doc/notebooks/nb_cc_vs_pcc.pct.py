@@ -50,8 +50,6 @@ import logging
 import tempfile
 
 import numpy as np
-import matplotlib
-matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
@@ -249,9 +247,6 @@ print(f"          whitening=A   (spectral whitening within band before AmpNorm)"
 
 db.commit()
 
-""
-reset_jobs(db, "cc_1", alljobs=True)
-reset_jobs(db, "cc_2", alljobs=True)
 
 ###############################################################################
 # ## 6 · Configure Filter and Stack
@@ -474,10 +469,8 @@ else:
         ax.set_xlim(-MAXLAG, MAXLAG)
 
     plt.tight_layout()
-    outfig = os.path.join(fig_dir, "cc_vs_pcc.png")
-    fig.savefig(outfig, dpi=150, bbox_inches="tight")
     plt.show()
-    print(f"Saved: {outfig}")
+
 
 ""
 import numpy as np
@@ -535,10 +528,7 @@ if common_keys:
         ax.legend(loc="upper right", fontsize=9)
 
     plt.tight_layout()
-    outfig2 = os.path.join(fig_dir, "cc_vs_pcc_overlay.png")
-    fig2.savefig(outfig2, dpi=150, bbox_inches="tight")
     plt.show()
-    print(f"Saved: {outfig2}")
 
 ###############################################################################
 # ## 15 · Summary Table
