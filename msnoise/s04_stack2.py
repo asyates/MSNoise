@@ -174,6 +174,38 @@ def main(stype, interval=1.0, loglevel="INFO"):
 
     filters = get_filters(db, all=False)
 
+    # Components to compute per filter, taking the filter's CC/SC/AC flags
+    # into account. Computed once here instead of for every pair.
+    filter_components = {}
+    logger.info("Active filters: %i" % len(filters))
+    for f in filters:
+        f_cc, f_single = get_filter_components_to_compute(db, int(f.ref),
+                                                          params)
+        filter_components[int(f.ref)] = (f_cc, f_single)
+        logger.info("  Filter %i (%.3f-%.3f Hz): CC=%s [%s] | SC=%s [%s] | "
+                    "AC=%s [%s]" % (
+                        f.ref, f.freqmin, f.freqmax,
+                        "on" if f.CC else "off", " ".join(f_cc),
+                        "on" if f.SC else "off",
+                        " ".join(c for c in f_single if c[0] != c[1]),
+                        "on" if f.AC else "off",
+                        " ".join(c for c in f_single if c[0] == c[1])))
+    any_cc = any(len(v[0]) for v in filter_components.values())
+    any_single = any(len(v[1]) for v in filter_components.values())
+    if not any_cc:
+        logger.info("No active filter has CC enabled: inter-station pairs "
+                    "will be skipped")
+    if not any_single:
+        logger.info("No active filter has SC/AC enabled: single-station "
+                    "pairs will be skipped")
+
+    def components_for(sta1, sta2, filterid):
+        f_cc, f_single = filter_components[filterid]
+        return f_single if sta1 == sta2 else f_cc
+
+    def pair_enabled(sta1, sta2):
+        return any_single if sta1 == sta2 else any_cc
+
     wiener_mlen = params.wiener_mlen
     wiener_nlen = params.wiener_nlen
     wienerfilt = params.wienerfilt
@@ -198,16 +230,20 @@ def main(stype, interval=1.0, loglevel="INFO"):
                 for loc2 in sta2.locs():
                     s2 = "%s.%s.%s" % (sta2.net, sta2.sta, loc2)
                     pairs.append((s1, s2))
-   
+
+        n_single = sum(1 for s1, s2 in pairs if s1 == s2)
+        n_inter = len(pairs) - n_single
+        pairs = [(s1, s2) for s1, s2 in pairs if pair_enabled(s1, s2)]
+        logger.info("REF stack: %i pairs to process (%i inter-station [%s], "
+                    "%i single-station [%s])" % (
+                        len(pairs), n_inter,
+                        "computed" if any_cc else "skipped",
+                        n_single, "computed" if any_single else "skipped"))
+
         for sta1, sta2 in pairs:
             for f in filters:
                 filterid = int(f.ref)
-                filt_components, filt_components_single_station = get_filter_components_to_compute(db, filterid, params)
-
-                if sta1 == sta2:
-                    components_to_compute = filt_components_single_station
-                else:
-                    components_to_compute = filt_components
+                components_to_compute = components_for(sta1, sta2, filterid)
 
                 for components in components_to_compute:
                     logger.info('Processing %s:%s-%s-%i REF stack' %
@@ -242,6 +278,8 @@ def main(stype, interval=1.0, loglevel="INFO"):
                     xr_save_ref(sta1, sta2, components, filterid, taxis, _)
     
     else:   #stype== 'mov'
+        n_skipped_pairs = 0
+        n_skipped_jobs = 0
         while is_dtt_next_job(db, flag='T', jobtype='STACK'):
             jobs = get_dtt_next_job(db, flag='T', jobtype='STACK')
 
@@ -252,18 +290,26 @@ def main(stype, interval=1.0, loglevel="INFO"):
                 continue
             pair = jobs[0].pair
             refs, days = zip(*[[job.ref, job.day] for job in jobs])
+            sta1, sta2 = pair.split(':')
+
+            if not pair_enabled(sta1, sta2):
+                # Nothing to stack for this pair with the current filters:
+                # mark the jobs done and don't create MWCS/WCT/STR jobs.
+                logger.debug("Skipping %s (%s not enabled on any filter), "
+                             "marking %i STACK jobs Done" % (
+                                 pair, "SC/AC" if sta1 == sta2 else "CC",
+                                 len(jobs)))
+                massive_update_job(db, jobs, "D")
+                n_skipped_pairs += 1
+                n_skipped_jobs += len(jobs)
+                continue
 
             logger.info(
                 "There are STACKS jobs for some days to recompute for %s" % pair)
 
-            sta1, sta2 = pair.split(':')
             for f in filters:
                 filterid = int(f.ref)
-                filt_components, filt_components_single_station = get_filter_components_to_compute(db, filterid, params)
-                if sta1 == sta2:
-                    components_to_compute = filt_components_single_station
-                else:
-                    components_to_compute = filt_components
+                components_to_compute = components_for(sta1, sta2, filterid)
 
                 for components in components_to_compute:
                     logger.info('Processing %s-%s-%i MOV stack' %
@@ -331,21 +377,25 @@ def main(stype, interval=1.0, loglevel="INFO"):
 
                     if params.keep_all:
                         c = get_results_all(db, sta1, sta2, filterid, components, all_days, format="xarray").sortby('times')
-                        dr = c.resample(times="%is" % params.corr_duration).mean()
-
                     else:
                         logger.warning("keep_all=N used, sampling interval will be 1-day")
                         c = get_results(db, sta1, sta2, filterid, components, all_days,  mov_stack=1, format="xarray",
                             params=params).sortby('times')
-                        dr = c.resample(times="1D").mean()
 
-                    is_valid, message = validate_stack_data(c, "moving") 
+                    # Validate BEFORE resampling: resample() raises on an empty
+                    # time axis (e.g. EN/EZ/NZ requested for a Z-only station)
+                    is_valid, message = validate_stack_data(c, "moving")
                     if not is_valid:
                         logger.error(f"Invalid moving stack data for {sta1}:{sta2}-{components}-{filterid}: {message}")
                         continue
                     elif "Warning" in message:
                         logger.warning(f"{sta1}:{sta2}-{components}-{filterid}: {message}")
-                        
+
+                    if params.keep_all:
+                        dr = c.resample(times="%is" % params.corr_duration).mean()
+                    else:
+                        dr = c.resample(times="1D").mean()
+
                     if wienerfilt:
                         dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold)
 
@@ -388,3 +438,8 @@ def main(stype, interval=1.0, loglevel="INFO"):
                     update_job(db, job.day, job.pair, 'MWCS', 'T')
                     update_job(db, job.day, job.pair, 'WCT', 'T')
                     update_job(db, job.day, job.pair, 'STR', 'T')
+
+        if n_skipped_pairs:
+            logger.info("Skipped %i pairs (%i STACK jobs marked Done) not "
+                        "enabled by any filter" % (n_skipped_pairs,
+                                                   n_skipped_jobs))

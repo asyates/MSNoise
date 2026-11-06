@@ -178,6 +178,34 @@ def main(loglevel="INFO"):
     dvv_stretching_params = get_dvv_stretching_jobs(db, all=False)
     time.sleep(np.random.random() * 5)
     taxis = get_t_axis(db)
+
+    # Components per filter, honouring the filter's CC/SC/AC flags.
+    # Computed once here instead of for every pair.
+    filters_by_ref = {int(f.ref): f for f in get_filters(db, all=False)}
+    filter_components = {}
+    logger.info("Filters with stretching parameters: %i" %
+                len(dvv_stretching_params))
+    for filter_ref in dvv_stretching_params:
+        filterid = int(filter_ref)
+        f_cc, f_single = get_filter_components_to_compute(db, filterid,
+                                                          params)
+        filter_components[filterid] = (f_cc, f_single)
+        f = filters_by_ref.get(filterid)
+        logger.info("  Filter %i%s: CC [%s] | SC/AC [%s]" % (
+            filterid,
+            " (%.3f-%.3f Hz)" % (f.freqmin, f.freqmax) if f else "",
+            " ".join(f_cc), " ".join(f_single)))
+    any_cc = any(len(v[0]) for v in filter_components.values())
+    any_single = any(len(v[1]) for v in filter_components.values())
+    if not any_cc:
+        logger.info("No filter has CC enabled: inter-station pairs will be "
+                    "skipped")
+    if not any_single:
+        logger.info("No filter has SC/AC enabled: single-station pairs will "
+                    "be skipped")
+    n_skipped_pairs = 0
+    n_skipped_jobs = 0
+
     smoothing_half_win= 5
     # hanningwindow = get_window("hanning", smoothing_half_win)
     while is_dtt_next_job(db, flag='T', jobtype='STR'):
@@ -192,20 +220,33 @@ def main(loglevel="INFO"):
         pair = jobs[0].pair
         refs, days = zip(*[[job.ref, job.day] for job in jobs])
         ref_name = pair.replace(':', '_')
+        station1, station2 = pair.split(":")
+        is_single = station1 == station2
+
+        if not (any_single if is_single else any_cc):
+            # Nothing to compute for this pair with the current filters
+            logger.debug("Skipping %s (%s not enabled on any filter), "
+                         "marking %i STR jobs Done" % (
+                             pair, "SC/AC" if is_single else "CC", len(jobs)))
+            massive_update_job(db, jobs, "D")
+            n_skipped_pairs += 1
+            n_skipped_jobs += len(jobs)
+            continue
 
         logger.info(
             "There are STR (stretching) jobs for some days to recompute for %s" % pair)
         for filter_ref, stretching_list in dvv_stretching_params.items():
             filterid = int(filter_ref)
-            filt_components, filt_components_single_station = get_filter_components_to_compute(db, filterid, params)
-            filt_all_components = np.unique(filt_components + filt_components_single_station)
+            f_cc, f_single = filter_components[filterid]
+            # single-station pairs only get SC/AC components, inter-station
+            # pairs only CC components
+            filt_all_components = f_single if is_single else f_cc
 
             for str_params in stretching_list:
                 strid = int(str_params.ref)
                 use_moving_ref = str_params.stretching_reftype == "mov"
 
                 for components in filt_all_components:
-                    station1, station2 = pair.split(":")
 
                     # --- lag window ---
                     if str_params.stretching_lag == "static":
@@ -228,7 +269,9 @@ def main(loglevel="INFO"):
                     if not use_moving_ref:
                         try:
                             ref = xr_get_ref(station1, station2, components, filterid, taxis)
-                            ref = ref.CCF.values
+                            # copy: .values from the netCDF is read-only and
+                            # is modified in place below
+                            ref = ref.CCF.values.copy()
                         except FileNotFoundError as fullpath:
                             logger.error("FILE DOES NOT EXIST: %s, skipping" % fullpath)
                             continue
@@ -252,7 +295,7 @@ def main(loglevel="INFO"):
 
                         # apply lag masking to full dataset
                         data_full.iloc[:, mid - int(minlag * params.goal_sampling_rate):mid + int(minlag * params.goal_sampling_rate)] *= 0.
-                        data_full.iloc[:, mid - int(maxlag2 * params.goal_sampling_rate)] *= 0.
+                        data_full.iloc[:, :mid - int(maxlag2 * params.goal_sampling_rate)] *= 0.
                         data_full.iloc[:, mid + int(maxlag2 * params.goal_sampling_rate):] *= 0.
 
                         if not use_moving_ref:
@@ -369,4 +412,7 @@ def main(loglevel="INFO"):
     #    if not params.hpc:
    #        for job in jobs:
      #           update_job(db, job.day, job.pair, 'DTT', 'T')
+    if n_skipped_pairs:
+        logger.info("Skipped %i pairs (%i STR jobs marked Done) not enabled "
+                    "by any filter" % (n_skipped_pairs, n_skipped_jobs))
     logger.info('*** Finished: Compute Stretching ***')

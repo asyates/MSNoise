@@ -262,8 +262,31 @@ def main(loglevel="INFO"):
     # Get Configuration
     params = get_params(db)
     filters = get_filters(db, all=False)
-    logger.info("Will compute [%s] for different stations" % " ".join(params.components_to_compute))
-    logger.info("Will compute [%s] for single stations" % " ".join(params.components_to_compute_single_station))
+
+    # Report what will actually be computed, per active filter, taking the
+    # filter's CC/SC/AC flags into account (not only the global config).
+    any_cc = False
+    any_single = False
+    logger.info("Active filters: %i" % len(filters))
+    for filterdb in filters:
+        f_cc, f_single = get_filter_components_to_compute(db, filterdb.ref,
+                                                          params)
+        f_sc = [c for c in f_single if c[0] != c[1]]
+        f_ac = [c for c in f_single if c[0] == c[1]]
+        any_cc |= bool(len(f_cc))
+        any_single |= bool(len(f_single))
+        logger.info("  Filter %i (%.3f-%.3f Hz): CC=%s [%s] | SC=%s [%s] | "
+                    "AC=%s [%s]" % (
+                        filterdb.ref, filterdb.freqmin, filterdb.freqmax,
+                        "on" if filterdb.CC else "off", " ".join(f_cc),
+                        "on" if filterdb.SC else "off", " ".join(f_sc),
+                        "on" if filterdb.AC else "off", " ".join(f_ac)))
+    if not any_cc:
+        logger.info("No active filter has CC enabled: inter-station pairs "
+                    "will be skipped (jobs are only marked Done)")
+    if not any_single:
+        logger.info("No active filter has SC/AC enabled: single-station "
+                    "pairs will be skipped (jobs are only marked Done)")
 
     if "R" in ''.join(params.components_to_compute) or "T" in ''.join(params.components_to_compute):
         logger.info("You seem to have configured R and/or T components, thus rotations ARE needed. You should therefore use the 'msnoise compute_cc_rot' instead.")
@@ -297,8 +320,16 @@ def main(loglevel="INFO"):
 
         stations = np.unique(stations)
 
-        logger.info("New CC Job: %s (%i pairs with %i stations)" %
-                     (goal_day, len(pairs), len(stations)))
+        n_single = sum(1 for p in pairs
+                       if p.split(':')[0].split('.')[:2] ==
+                       p.split(':')[1].split('.')[:2])
+        n_inter = len(pairs) - n_single
+        logger.info("New CC Job: %s (%i jobs with %i stations: "
+                    "%i inter-station pairs [%s], "
+                    "%i single-station pairs [%s])" %
+                    (goal_day, len(pairs), len(stations),
+                     n_inter, "computed" if any_cc else "skipped",
+                     n_single, "computed" if any_single else "skipped"))
         jt = time.time()
 
         comps = []
