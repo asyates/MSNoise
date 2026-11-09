@@ -2773,7 +2773,10 @@ def xr_create_or_open(fn, taxis=[], name="CCF"):
 
 
 def xr_insert_or_update(dataset, new):
-    tt = new.merge(dataset, compat='override', combine_attrs="drop_conflicts")
+    # join='outer' (union of the old and new time axes) is the behaviour we
+    # rely on; set it explicitly, xarray will change the default to 'exact'
+    tt = new.merge(dataset, compat='override', join='outer',
+                   combine_attrs="drop_conflicts")
     return tt.combine_first(dataset)
 
 
