@@ -432,12 +432,18 @@ def main(stype, interval=1.0, loglevel="INFO"):
                         xr_save_ccf(sta1, sta2, components, filterid, mov_stack, taxis, xx_cleaned, overwrite=False)
                         del xx, xx_cleaned
 
-            massive_update_job(db, jobs, "D")
+            # Create the follow-up jobs FIRST (one transaction, retried on
+            # deadlocks), and only then mark the STACK jobs Done. Before, the
+            # STACK jobs were marked Done first and the MWCS/WCT/STR jobs
+            # created one by one: a deadlock between parallel workers
+            # (msnoise -t N, MySQL) crashed the worker half-way, leaving
+            # STACK=Done with no STR job for the remaining days -> dv/v
+            # silently missing. Now a crash leaves the STACK jobs "I"
+            # (in progress), visible and fixable with msnoise reset STACK.
             if stype != "step" and not params.hpc:
-                for job in jobs:
-                    update_job(db, job.day, job.pair, 'MWCS', 'T')
-                    update_job(db, job.day, job.pair, 'WCT', 'T')
-                    update_job(db, job.day, job.pair, 'STR', 'T')
+                upsert_pair_jobs(db, pair, [job.day for job in jobs],
+                                 ['MWCS', 'WCT', 'STR'], flag='T')
+            massive_update_job(db, jobs, "D")
 
         if n_skipped_pairs:
             logger.info("Skipped %i pairs (%i STACK jobs marked Done) not "

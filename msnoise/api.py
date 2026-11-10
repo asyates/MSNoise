@@ -1366,9 +1366,54 @@ def massive_update_job(session, jobs, flag="D"):
             session.commit()
             updated = True
         except:
+            # e.g. a MySQL deadlock between parallel workers: the session
+            # must be rolled back before it can be used again
+            session.rollback()
             time.sleep(np.random.random())
             pass
     return
+
+
+def upsert_pair_jobs(session, pair, days, jobtypes, flag="T", retries=20):
+    """Create (or reset to `flag`) the jobs of several `jobtypes` for one
+    pair and a list of days, in a single transaction.
+
+    Used to create the MWCS/WCT/STR jobs after a MOV stack. Unlike calling
+    :func:`update_job` once per job (one commit each), all-or-nothing: if the
+    database reports a deadlock (parallel workers, ``msnoise -t N``), the
+    transaction is rolled back and retried after a short random pause, so
+    jobs can no longer be silently lost.
+
+    :type pair: str
+    :type days: list of str (YYYY-MM-DD)
+    :type jobtypes: list of str, e.g. ["MWCS", "WCT", "STR"]
+    """
+    days = sorted({str(d)[:10] for d in days})
+    if not days:
+        return
+    for attempt in range(1, retries + 1):
+        try:
+            existing = session.query(Job.ref, Job.day, Job.jobtype).\
+                filter(Job.pair == pair).\
+                filter(Job.jobtype.in_(jobtypes)).\
+                filter(Job.day.in_(days)).all()
+            have = {(j.day, j.jobtype) for j in existing}
+            now = datetime.datetime.utcnow()
+            session.bulk_update_mappings(
+                Job, [{'ref': j.ref, 'flag': flag, 'lastmod': now}
+                      for j in existing])
+            session.bulk_insert_mappings(
+                Job, [{'day': d, 'pair': pair, 'jobtype': jt, 'flag': flag,
+                       'lastmod': now}
+                      for d in days for jt in jobtypes
+                      if (d, jt) not in have])
+            session.commit()
+            return
+        except Exception:
+            session.rollback()
+            if attempt == retries:
+                raise
+            time.sleep(np.random.random() * attempt)
 
 def is_next_job(session, flag='T', jobtype='CC'):
     """
@@ -1527,11 +1572,18 @@ def get_dtt_next_job(session, flag='T', jobtype='DTT'):
                 updated=True
             except:
                 traceback.print_exc()
+                session.rollback()   # needed before the session is reused
                 time.sleep(np.random.random())
                 pass
         return tmp
     except:
+        # typically a deadlock with another worker while selecting/locking
+        # the jobs: nothing was claimed; roll back so this worker can simply
+        # ask again (without this the next query raised PendingRollbackError
+        # and the worker died)
         traceback.print_exc()
+        session.rollback()
+        time.sleep(np.random.random())
         return []
 
 
