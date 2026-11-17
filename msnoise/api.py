@@ -3,6 +3,7 @@ import copy
 import datetime
 import itertools
 import logging
+import re
 import os
 import glob
 import traceback
@@ -626,7 +627,11 @@ def get_dvv_stretching_jobs(session, all=False):
     )
 
     if not all:
-        query = query.filter(Filter.used == True)
+        # only used filters AND used stretching sets (the stretching set's
+        # own "used" flag was ignored before, so it could not be switched
+        # off, e.g. to skip the moving-reference sets for a while)
+        query = query.filter(Filter.used == True).\
+            filter(DvvStretching.used == True)
     try:
         results = query.all()
     except Exception as e:
@@ -1096,6 +1101,56 @@ def get_interstation_distance(station1, station2, coordinates="DEG"):
         return dist
 
 
+def get_interstation_distances(session):
+    """Distances (km) of all station pairs, as a dict keyed by
+    ``"NET1_STA1_NET2_STA2"`` (0.0 for single-station pairs).
+    Use :func:`get_pair_distance` to look up a job's pair in it."""
+    interstations = {}
+    for sta1, sta2 in get_station_pairs(session):
+        s1 = "%s_%s" % (sta1.net, sta1.sta)
+        s2 = "%s_%s" % (sta2.net, sta2.sta)
+        if s1 == s2:
+            interstations["%s_%s" % (s1, s2)] = 0.0
+        else:
+            interstations["%s_%s" % (s1, s2)] = get_interstation_distance(
+                sta1, sta2, sta1.coordinates)
+    return interstations
+
+
+def get_pair_distance(interstations, pair):
+    """Distance (km) of a job pair ``"NET.STA.LOC:NET.STA.LOC"`` from the
+    dict of :func:`get_interstation_distances` (either station order).
+    Returns ``None`` if the pair is unknown."""
+    netsta1, netsta2 = pair.split(":")
+    n1, s1 = netsta1.split(".")[:2]
+    n2, s2 = netsta2.split(".")[:2]
+    if (n1, s1) == (n2, s2):
+        return 0.0
+    for key in ("%s_%s_%s_%s" % (n1, s1, n2, s2),
+                "%s_%s_%s_%s" % (n2, s2, n1, s1)):
+        if key in interstations:
+            return interstations[key]
+    return None
+
+
+def get_lag_min(lag_type, minlag, dist=0.0, v=None):
+    """Start (s, positive) of the coda window used for dv/v.
+
+    * ``static``: ``minlag``
+    * ``dynamic``: ``max(minlag, dist / v)``, i.e. start after the
+      ballistic arrival at velocity ``v`` (km/s) for the interstation
+      distance ``dist`` (km), but never before ``minlag`` (so
+      autocorrelations, dist=0, use ``minlag``).
+    """
+    minlag = float(minlag or 0.0)
+    if (lag_type or "static").strip().lower() != "dynamic":
+        return minlag
+    if v is None or not np.isfinite(float(v)) or float(v) <= 0:
+        raise ValueError("lag is 'dynamic' but the velocity is not set "
+                         "(got %r); it must be > 0 km/s" % (v,))
+    return max(minlag, float(dist or 0.0) / float(v))
+
+
 # DATA AVAILABILITY
 
 
@@ -1548,43 +1603,100 @@ def get_dtt_next_job(session, flag='T', jobtype='DTT'):
         Days of the next DTT jobs -
         Job IDs (for later being able to update their flag).
     """
-    from sqlalchemy.sql.expression import func
-    if read_db_inifile().tech == 2:
-        rand = func.rand
-    else:
-        rand = func.random
+    # Claiming works in one short transaction, designed for several workers
+    # (msnoise -t N) running at the same time:
+    #   1. list the pairs that still have jobs to do (no locks), random order
+    #   2. lock the jobs of ONE pair with FOR UPDATE SKIP LOCKED: if another
+    #      worker is claiming that pair right now, its rows are skipped
+    #      instead of waited for, and we try the next pair
+    #   3. mark them "I" and commit
+    # With the (jobtype, flag, pair) index (see ensure_job_indexes) step 2
+    # only touches that pair's rows. The previous version locked every "T"
+    # row of the jobtype on each claim, which caused constant deadlocks.
+    import random
+    from sqlalchemy import text
+    from sqlalchemy.exc import OperationalError
+    table = Job.__table__.name
+    lock = _job_lock_clause(session)
     try:
-        jobs = session.query(Job.ref, Job.day, Job.pair, Job.flag).filter(Job.flag == flag).\
-            filter(Job.jobtype == jobtype).filter(Job.day != 'REF').\
-            filter(Job.pair == session.query(Job).
-                   filter(Job.flag == flag).
-                   filter(Job.jobtype == jobtype).
-                   filter(Job.day != 'REF').
-                   order_by(rand()).first().pair).\
-            with_for_update()
-        tmp = jobs.all()
-        mappings = [{'ref': job.ref, 'flag': "I"} for job in tmp]
-        updated = False
-        while not updated:
-            try:
-                session.bulk_update_mappings(Job, mappings)
-                session.commit()
-                updated=True
-            except:
-                traceback.print_exc()
-                session.rollback()   # needed before the session is reused
-                time.sleep(np.random.random())
-                pass
-        return tmp
-    except:
-        # typically a deadlock with another worker while selecting/locking
-        # the jobs: nothing was claimed; roll back so this worker can simply
-        # ask again (without this the next query raised PendingRollbackError
-        # and the worker died)
-        traceback.print_exc()
+        pairs = [r[0] for r in session.execute(text(
+            "SELECT DISTINCT pair FROM {t} WHERE jobtype=:jt AND flag=:fl "
+            "AND day<>'REF'".format(t=table)), dict(jt=jobtype, fl=flag))]
+        session.rollback()          # end the read; no locks kept
+        random.shuffle(pairs)
+        for pair in pairs:
+            jobs = session.execute(text(
+                "SELECT ref, day, pair, flag FROM {t} WHERE jobtype=:jt "
+                "AND flag=:fl AND pair=:pair AND day<>'REF'{lock}".format(
+                    t=table, lock=lock)),
+                dict(jt=jobtype, fl=flag, pair=pair)).fetchall()
+            if not jobs:            # claimed by another worker meanwhile
+                session.rollback()
+                continue
+            session.bulk_update_mappings(
+                Job, [{'ref': j.ref, 'flag': "I"} for j in jobs])
+            session.commit()
+            return jobs
+        return []
+    except OperationalError as e:
+        # e.g. a deadlock (should now be rare): nothing was claimed, the
+        # transaction is rolled back; the caller simply asks again
         session.rollback()
+        logging.warning("get_dtt_next_job(%s): %s -- retrying" % (
+            jobtype, str(e.orig if hasattr(e, "orig") else e)[:100]))
         time.sleep(np.random.random())
         return []
+    except Exception:
+        session.rollback()
+        traceback.print_exc()
+        time.sleep(np.random.random())
+        return []
+
+
+_JOB_LOCK_CLAUSE = None
+
+
+def _job_lock_clause(session):
+    """Row-locking clause for claiming jobs, depending on the database:
+    MySQL >= 8.0 / MariaDB >= 10.6 / PostgreSQL: FOR UPDATE SKIP LOCKED;
+    older MySQL: FOR UPDATE; SQLite (single writer anyway): none."""
+    global _JOB_LOCK_CLAUSE
+    if _JOB_LOCK_CLAUSE is None:
+        from sqlalchemy import text
+        name = session.get_bind().dialect.name
+        if name == "sqlite":
+            _JOB_LOCK_CLAUSE = ""
+        elif name == "postgresql":
+            _JOB_LOCK_CLAUSE = " FOR UPDATE SKIP LOCKED"
+        else:
+            try:
+                v = session.execute(text("SELECT VERSION()")).scalar()
+                session.rollback()
+                num = tuple(int(x) for x in re.findall(r"\d+", v)[:2])
+                maria = "mariadb" in v.lower()
+                ok = num >= ((10, 6) if maria else (8, 0))
+            except Exception:
+                session.rollback()
+                ok = False
+            _JOB_LOCK_CLAUSE = " FOR UPDATE SKIP LOCKED" if ok \
+                else " FOR UPDATE"
+    return _JOB_LOCK_CLAUSE
+
+
+def ensure_job_indexes(session):
+    """Create the (jobtype, flag, pair) index on the jobs table if it is
+    missing. It lets workers find and lock one pair's jobs without scanning
+    (and locking) all jobs of that type. Safe to call repeatedly."""
+    from sqlalchemy import inspect, text
+    table = Job.__table__.name
+    insp = inspect(session.get_bind())
+    names = {ix["name"] for ix in insp.get_indexes(table)}
+    if "job_index3" not in names:
+        session.execute(text("CREATE INDEX job_index3 ON {t} "
+                             "(jobtype, flag, pair)".format(t=table)))
+        session.commit()
+        return True
+    return False
 
 
 def reset_jobs(session, jobtype, alljobs=False, rule=None):
@@ -2383,8 +2495,9 @@ def updated_days_for_dates(session, date1, date2, pair, jobtype='CC',
             filter(text("day<=:date2")).\
             filter(Job.jobtype == jobtype).\
             filter(Job.lastmod >= lastmod).group_by(Job.day).\
-            order_by(Job.day).params(date1=date1.strftime("%Y-%m-%d"),
-                                     date2=date2.strftime("%Y-%m-%d")).all()
+            order_by(Job.day).with_entities(Job.day).\
+            params(date1=date1.strftime("%Y-%m-%d"),
+                   date2=date2.strftime("%Y-%m-%d")).all()
     else:
         days = session.query(Job).filter(Job.pair == pair).\
             filter(Job.day >= date1.strftime("%Y-%m-%d")). \

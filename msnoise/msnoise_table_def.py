@@ -218,13 +218,13 @@ def declare_tables(prefix=None):
         :type dvv_mwcs_ref: int
         :param dvv_mwcs_ref: The id of mwcs parameters from dvv_mwcs table
         :type dtt_minlag: float
-        :param dtt_minlag: If ``dtt_lag`` =static (in config table): min lag time (in seconds)
+        :param dtt_minlag: Min lag time (in seconds). If ``dtt_lag`` =dynamic, the window starts at max(dtt_minlag, distance / dtt_v)
         :type dtt_width: float
         :param dtt_width: Width of the time lag window (in seconds)
         :type dtt_lag: string
         :params dtt_lag: How is the lag window defined for MWCS [static]/dynamic.
         :type dtt_v: float
-        :param dtt_v: If ``dttlag`` =dynamic (in config table): what velocity to use to avoid ballistic waves [1.0] km/s (default=1.0)
+        :param dtt_v: If ``dtt_lag`` =dynamic: velocity (km/s) used to avoid ballistic waves, window starts at max(dtt_minlag, distance / dtt_v)
         :type dtt_sides: string
         :params dtt_sides: Which sides to use,str,both/left/right
         :type dtt_mincoh: float
@@ -367,11 +367,11 @@ def declare_tables(prefix=None):
         :type wct_minlag: float
         :param wct_minlag: Minimum lag time (in seconds)
         :type wct_width: float
-        :param wct_width: Width of the time lag window (in seconds)
+        :param wct_width: Not used (the window length is set by wct_codacycles)
         :type wct_lag: string
-        :param wct_lag: How is the lag window defined for WCT [static]/dynamic.
+        :param wct_lag: How is the lag window start defined for WCT [static]/dynamic. static: wct_minlag; dynamic: max(wct_minlag, distance / wct_v). The window end is always start + wct_codacycles periods.
         :type wct_v: float
-        :param wct_v: Velocity parameter used for dynamic lag calculation
+        :param wct_v: If ``wct_lag`` =dynamic: velocity (km/s) used to avoid ballistic waves
         :type wct_sides: string
         :param wct_sides: Which sides to use (both/left/right)
         :type wct_mincoh: float

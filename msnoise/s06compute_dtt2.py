@@ -31,16 +31,7 @@ def main(interval=1, loglevel="INFO"):
     updated_dtt = updated_days_for_dates(
         db, start, end, '%', jobtype='DTT', returndays=True,
         interval=datetime.timedelta(days=interval))
-    interstations = {}
-    for sta1, sta2 in get_station_pairs(db):
-        s1 = "%s_%s" % (sta1.net, sta1.sta)
-        s2 = "%s_%s" % (sta2.net, sta2.sta)
-        if s1 == s2:
-            interstations["%s_%s" % (s1, s2)] = 0.0
-        else:
-            interstations["%s_%s" % (s1, s2)] = get_interstation_distance(sta1,
-                                                                          sta2,
-                                                                          sta1.coordinates)
+    interstations = get_interstation_distances(db)
 
     #filters = get_filters(db, all=False)
     mwcs_dtt_params = get_dvv_mwcs_dtt_jobs(db, all=False) 
@@ -55,13 +46,13 @@ def main(interval=1, loglevel="INFO"):
             continue
         pair = jobs[0].pair
         refs, days = zip(*[[job.ref, job.day] for job in jobs])
-        netsta1, netsta2 = pair.split(':')
         station1, station2 = pair.split(":")
-        n1, s1, l1 = netsta1.split(".")
-        n2, s2, l2 = netsta2.split(".")
         # todo, include location code for computing distances?
-        dpair = "%s_%s_%s_%s" % (n1, s1, n2, s2)
-        dist = interstations[dpair] if dpair in interstations else 0.0
+        dist = get_pair_distance(interstations, pair)
+        if dist is None:
+            logger.warning("No interstation distance for %s: using 0 km "
+                           "(dynamic lag falls back to dtt_minlag)" % pair)
+            dist = 0.0
         logger.info(
             "There are DTT jobs for some days to recompute for %s" % pair)
         for filter_ref, mwcs_list in mwcs_dtt_params.items():
@@ -100,12 +91,12 @@ def main(interval=1, loglevel="INFO"):
                             MCOH = mwcs.xs("MCOH", level=0, axis=1).copy()
                             tArray = M.columns.values
 
-                            if dtt_params.dtt_lag == "static":
-                                lmlag = -dtt_params.dtt_minlag
-                                rmlag = dtt_params.dtt_minlag
-                            else:
-                                lmlag = -dist / dtt_params.dtt_v
-                                rmlag = dist / dtt_params.dtt_v
+                            # static: dtt_minlag; dynamic:
+                            # max(dtt_minlag, dist / dtt_v)
+                            rmlag = get_lag_min(dtt_params.dtt_lag,
+                                                dtt_params.dtt_minlag,
+                                                dist, dtt_params.dtt_v)
+                            lmlag = -rmlag
                             lMlag = lmlag - dtt_params.dtt_width
                             rMlag = rmlag + dtt_params.dtt_width
 
@@ -129,11 +120,10 @@ def main(interval=1, loglevel="INFO"):
 
                             #compute dt/t and exclude values exceeding dtt_maxdtt
                             dtt_values = np.abs(M / tArray)
-                            invalid_dtt_indices = np.where(dtt_values > dtt_params.dtt_maxdtt)
-                            row_indices, col_indices = invalid_dtt_indices
-
-                            EM.values[row_indices, col_indices] = 1.0
-                            MCOH.values[row_indices, col_indices] = 0.0
+                            # .values can be a read-only view in recent pandas, so mask instead
+                            invalid = dtt_values > dtt_params.dtt_maxdtt
+                            EM = EM.mask(invalid, 1.0)
+                            MCOH = MCOH.mask(invalid, 0.0)
 
                             values = []
                             dates = []

@@ -176,6 +176,7 @@ def main(loglevel="INFO"):
     outfolders = []
     #filters = get_filters(db, all=False)
     dvv_stretching_params = get_dvv_stretching_jobs(db, all=False)
+    interstations = get_interstation_distances(db)
     time.sleep(np.random.random() * 5)
     taxis = get_t_axis(db)
 
@@ -233,6 +234,13 @@ def main(loglevel="INFO"):
             n_skipped_jobs += len(jobs)
             continue
 
+        dist = get_pair_distance(interstations, pair)
+        if dist is None:
+            logger.warning("No interstation distance for %s: using 0 km "
+                           "(dynamic lag falls back to stretching_minlag)"
+                           % pair)
+            dist = 0.0
+
         logger.info(
             "There are STR (stretching) jobs for some days to recompute for %s" % pair)
         for filter_ref, stretching_list in dvv_stretching_params.items():
@@ -249,18 +257,37 @@ def main(loglevel="INFO"):
                 for components in filt_all_components:
 
                     # --- lag window ---
-                    if str_params.stretching_lag == "static":
-                        minlag = str_params.stretching_minlag
-                    else:
-                        SS1 = station1.split(".")
-                        SS2 = station2.split(".")
-                        SS1 = get_station(db, SS1[0], SS1[1])
-                        SS2 = get_station(db, SS2[0], SS2[1])
-                        minlag = get_interstation_distance(SS1, SS2, SS1.coordinates) / str_params.stretching_v
-
+                    # static: stretching_minlag; dynamic:
+                    # max(stretching_minlag, dist / stretching_v).
+                    # NOTE: stretching_sides is not used for now, both
+                    # sides of the CCF are always used.
+                    minlag = get_lag_min(str_params.stretching_lag,
+                                         str_params.stretching_minlag,
+                                         dist, str_params.stretching_v)
                     maxlag2 = minlag + str_params.stretching_width
-                    mid = int(params.goal_sampling_rate * params.maxlag)
-                    print("between", minlag, "and", maxlag2)
+                    if minlag >= maxlag:
+                        logger.error(
+                            "Stretching set %i, %s %s: lag window starts at "
+                            "%.2f s, beyond maxlag (%.2f s), skipping" % (
+                                strid, pair, components, minlag, maxlag))
+                        continue
+                    if maxlag2 > maxlag:
+                        logger.warning(
+                            "Stretching set %i, %s %s: lag window end %.2f s "
+                            "> maxlag, cut to %.2f s" % (
+                                strid, pair, components, maxlag2, maxlag))
+                        maxlag2 = maxlag
+                    mid = int(goal_sampling_rate * maxlag)
+                    # sample indices of the window (clipped to the CCF, so a
+                    # window end beyond maxlag can not wrap round and zero
+                    # the whole CCF through a negative index)
+                    i_min = int(minlag * goal_sampling_rate)
+                    i_max = int(maxlag2 * goal_sampling_rate)
+                    lo_out = max(mid - i_max, 0)     # zero [:lo_out]
+                    hi_out = mid + i_max             # zero [hi_out:]
+                    logger.debug("Stretching set %i, %s %s: lag window "
+                                 "%.2f-%.2f s" % (strid, pair, components,
+                                                  minlag, maxlag2))
 
                     str_range = str_params.stretching_max
                     nstr = str_params.stretching_nsteps
@@ -275,9 +302,9 @@ def main(loglevel="INFO"):
                         except FileNotFoundError as fullpath:
                             logger.error("FILE DOES NOT EXIST: %s, skipping" % fullpath)
                             continue
-                        ref[mid - int(minlag * goal_sampling_rate):mid + int(minlag * goal_sampling_rate)] *= 0.
-                        ref[:mid - int(maxlag2 * goal_sampling_rate)] *= 0.
-                        ref[mid + int(maxlag2 * goal_sampling_rate):] *= 0.
+                        ref[mid - i_min:mid + i_min] *= 0.
+                        ref[:lo_out] *= 0.
+                        ref[hi_out:] *= 0.
                         ref_stretched, deltas = stretch_mat_creation(ref, str_range=str_range, nstr=nstr)
 
                     for mov_stack in mov_stacks:
@@ -294,9 +321,9 @@ def main(loglevel="INFO"):
                         data_full = data_full.dropna()
 
                         # apply lag masking to full dataset
-                        data_full.iloc[:, mid - int(minlag * params.goal_sampling_rate):mid + int(minlag * params.goal_sampling_rate)] *= 0.
-                        data_full.iloc[:, :mid - int(maxlag2 * params.goal_sampling_rate)] *= 0.
-                        data_full.iloc[:, mid + int(maxlag2 * params.goal_sampling_rate):] *= 0.
+                        data_full.iloc[:, mid - i_min:mid + i_min] *= 0.
+                        data_full.iloc[:, :lo_out] *= 0.
+                        data_full.iloc[:, hi_out:] *= 0.
 
                         if not use_moving_ref:
                             # ---- STATIC: vectorised over all days ----

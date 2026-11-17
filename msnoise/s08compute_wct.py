@@ -369,6 +369,7 @@ def main(loglevel="INFO"):
     # Fetch all WCT and DTT parameter sets
     dvv_wct_params = get_dvv_wct_jobs(db, all=False)
     wct_dtt_params = get_dvv_wct_dtt_jobs(db, all=False)
+    interstations = get_interstation_distances(db)
 
     time.sleep(np.random.random() * 5)
 
@@ -383,6 +384,11 @@ def main(loglevel="INFO"):
             continue
         pair = jobs[0].pair
         refs, days = zip(*[[job.ref, job.day] for job in jobs])
+        dist = get_pair_distance(interstations, pair)
+        if dist is None:
+            logger.warning("No interstation distance for %s: using 0 km "
+                           "(dynamic lag falls back to wct_minlag)" % pair)
+            dist = 0.0
 
         logger.info(
             "There are WCT jobs for some days to recompute for %s" % pair)
@@ -420,7 +426,12 @@ def main(loglevel="INFO"):
                     freqmax = dtt_params.wct_dtt_freqmax
                     coda_cycles = dtt_params.wct_codacycles 
                     min_nonzero = dtt_params.wct_min_nonzero
-                    lag_min = dtt_params.wct_minlag
+                    # static: wct_minlag; dynamic: max(wct_minlag,
+                    # dist / wct_v). The window end is lag_min +
+                    # wct_codacycles periods (per frequency).
+                    lag_min = get_lag_min(dtt_params.wct_lag,
+                                          dtt_params.wct_minlag,
+                                          dist, dtt_params.wct_v)
                     maxdt = dtt_params.wct_maxdt
                     mincoh = dtt_params.wct_mincoh
 
@@ -453,7 +464,8 @@ def main(loglevel="INFO"):
 
                             cur = data#.CCF.values
                             if wct_norm:
-                                new_waveform = (cur/cur.max()) 
+                                # normalise each day's CCF by its own peak (not per lag sample)
+                                new_waveform = cur.div(cur.abs().max(axis=1), axis=0)
                             else:
                                 new_waveform = cur
 
@@ -463,11 +475,11 @@ def main(loglevel="INFO"):
                                 WXamp, WXspec, WXangle, WXcoh, WXdt, freqs, coi = xwt(ori_waveform, row.values, goal_sampling_rate, int(ns), int(nt), int(vpo), freqmin, freqmax, int(nptsfreq), wavelet_type)
                                 
                                 dvv, err, _ = compute_wct_dvv(freqs, taxis, WXamp, WXcoh, WXdt, 
-                                                              lag_min=int(lag_min), coda_cycles=coda_cycles, 
+                                                              lag_min=lag_min, coda_cycles=coda_cycles, 
                                                               mincoh=mincoh, maxdt=maxdt, min_nonzero=min_nonzero, 
                                                               freqmin=freqmin, freqmax=freqmax)
 
-                                coh = get_avgcoh(freqs, taxis, WXcoh, freqmin, freqmax, lag_min=int(lag_min), coda_cycles=coda_cycles)
+                                coh = get_avgcoh(freqs, taxis, WXcoh, freqmin, freqmax, lag_min=lag_min, coda_cycles=coda_cycles)
 
                                 dvv_list.append(dvv)
                                 err_list.append(err)
