@@ -144,7 +144,7 @@ import argparse
 import scipy.signal
 
 from .api import *
-from .wiener import *
+from .wiener import wiener_filt, odd_window
 
 
 import logbook
@@ -225,17 +225,31 @@ def main(stype, interval=1.0, loglevel="INFO"):
     wiener_mlen = params.wiener_mlen
     wiener_nlen = params.wiener_nlen
     wienerfilt = params.wienerfilt
-    wiener_M =  int(pd.to_timedelta(wiener_mlen).total_seconds() / params.corr_duration)
-    wiener_N =  int(pd.to_timedelta(wiener_nlen).total_seconds() * params.cc_sampling_rate)
-    
-    # is there a better alternative for threshold?
-    if params.keep_all:
-        wiener_gap_threshold = wiener_M #no. indices which will be considered adjacent by wiener
-    else:
-        wiener_gap_threshold = pd.to_timedelta(wiener_mlen).days
+    # rows of the CCF image: one per corr_duration window (keep_all=Y) or
+    # one per day (keep_all=N, daily CCFs)
+    wiener_row_spacing = pd.Timedelta(seconds=params.corr_duration) \
+        if params.keep_all else pd.Timedelta(days=1)
+    wiener_M = odd_window(pd.to_timedelta(wiener_mlen) / wiener_row_spacing)
+    wiener_N = odd_window(pd.to_timedelta(wiener_nlen).total_seconds()
+                          * params.cc_sampling_rate)
+    # a missing span >= wiener_mlen splits the image into separate segments
+    wiener_gap_threshold = pd.to_timedelta(wiener_mlen)
 
     if wienerfilt:
-        logger.info('Wiener filter enabled, will apply to CCFs before stacking')
+        logger.info('Wiener filter enabled, will apply to CCFs before '
+                    'stacking: %i rows (%s) x %i lag samples (%.3f s)' % (
+                        wiener_M, wiener_mlen, wiener_N,
+                        wiener_N / params.cc_sampling_rate))
+        for f in filters:
+            # a box of N samples has its first spectral null at fs/N Hz
+            null = params.cc_sampling_rate / wiener_N
+            if wiener_N > 1 and null <= f.freqmax:
+                logger.warning('Wiener lag window %.3f s (first null at %.2f '
+                               'Hz) will strongly attenuate filter %i (%.2f-'
+                               '%.2f Hz): use wiener_nlen <= %.3f s' % (
+                                   wiener_N / params.cc_sampling_rate, null,
+                                   f.ref, f.freqmin, f.freqmax,
+                                   1. / (4 * f.freqmax)))
 
     if stype == "ref":
         
@@ -287,7 +301,8 @@ def main(stype, interval=1.0, loglevel="INFO"):
                         continue
                     
                     if wienerfilt:
-                        dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold)
+                        dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold,
+                                         wiener_row_spacing)
 
                     # TODO add other stack methods here! using apply?
                     _ = dr.mean(dim="times")                    
@@ -413,7 +428,8 @@ def main(stype, interval=1.0, loglevel="INFO"):
                         dr = c.resample(times="1D").mean()
 
                     if wienerfilt:
-                        dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold)
+                        dr = wiener_filt(dr, wiener_M, wiener_N, wiener_gap_threshold,
+                                         wiener_row_spacing)
 
                     excess_dates = pd.to_datetime(excess_days).values
                     for mov_stack in mov_stacks:
