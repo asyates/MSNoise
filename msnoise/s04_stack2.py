@@ -19,11 +19,14 @@ only be exported if new/modified CCF is available.
 The export directory are "REF/" and "DAY%03i/" where %03i will be replaced by
 the number of days stacked together (DAYS_005 for a 5-days stack, e.g.).
 
-Please note that within MSNoise, stacks are always *inclusive* of the time/day
-mentioned. For example, a 5-days stack on January 10, will contain
-cross-correlation functions computed for January 6, 7, 8, 9 AND 10!
+Please note that within MSNoise, daily stacks (``mov_sample`` a whole number
+of days, e.g. ("5d", "1d")) are *inclusive* of the day mentioned. For example,
+a 5-days stack on January 10, will contain cross-correlation functions computed
+for January 6, 7, 8, 9 AND 10!
 The graphical representation centered on a "January 10" tick might then display
 changes in the CCF that occurred *on* the 10th !
+Sub-daily stacks (e.g. ("1d", "12h")) are labelled at the END of their window
+instead: the point at 12:00 holds the data up to 12:00.
 
 Moving-window stacks are configured using the ``mov_stack`` parameter in
 ``msnoise admin``.
@@ -147,6 +150,16 @@ from .wiener import *
 import logbook
 import matplotlib.pyplot as plt
 
+def is_daily(sample):
+    """True if a mov_stack sampling ("1d", "5D", ...) is a whole number of
+    days (labelled inclusively), False for sub-daily ones ("12h", ...)."""
+    try:
+        td = pd.to_timedelta(sample)
+    except (ValueError, TypeError):
+        return False
+    return td >= pd.Timedelta("1D") and td % pd.Timedelta("1D") == pd.Timedelta(0)
+
+
 def main(stype, interval=1.0, loglevel="INFO"):
     """Computes the REF/MOV stacks.
 
@@ -169,6 +182,9 @@ def main(stype, interval=1.0, loglevel="INFO"):
     taxis = get_t_axis(db)
 
     mov_stacks = params.mov_stack
+    # daily stacks are labelled with their last data day (inclusive), sub-
+    # daily ones with the end of the window: see the module docstring
+    any_subdaily = any(not is_daily(ms[1]) for ms in mov_stacks)
     # if 1 in mov_stacks:
     #     mov_stacks.remove(1)  # remove 1 day stack, it will be done automatically
 
@@ -425,8 +441,19 @@ def main(stype, interval=1.0, loglevel="INFO"):
                             with xr.set_options(use_numbagg=False): #no need to use construct thing
                                 xx = dr.rolling(times=duration_to_windows, min_periods=1).mean("win")
                             xx = xx.resample(times=mov_sample, label="right", skipna=True).asfreq().dropna("times", how="all")
-                       
-                        mask = xx.times.dt.floor('D').isin(excess_dates)
+
+                        # label="right" puts each window at its END, so the point
+                        # labelled day L holds data up to day L-1.
+                        if is_daily(mov_sample):
+                            # daily: label with the last data day instead
+                            # (inclusive, e.g. 1d_1d on day D = the CCFs of day D)
+                            xx = xx.assign_coords(times=xx.times - np.timedelta64(1, 'D'))
+                            last_day = xx.times.dt.floor('D')
+                        else:
+                            last_day = xx.times.dt.floor('D') - np.timedelta64(1, 'D')
+                        # drop a point whose last DATA day is a padding day (loaded
+                        # only as history for the rolling mean)
+                        mask = last_day.isin(excess_dates)
                         xx_cleaned = xx.where(~mask, drop=True) #remove days not associated with current jobs
 
                         xr_save_ccf(sta1, sta2, components, filterid, mov_stack, taxis, xx_cleaned, overwrite=False)
@@ -441,7 +468,19 @@ def main(stype, interval=1.0, loglevel="INFO"):
             # silently missing. Now a crash leaves the STACK jobs "I"
             # (in progress), visible and fixable with msnoise reset STACK.
             if stype != "step" and not params.hpc:
-                upsert_pair_jobs(db, pair, [job.day for job in jobs],
+                # dv/v jobs select stack points by label day. Daily stacks:
+                # data day D is at label D. Sub-daily ones are labelled at the
+                # window end, so the last window of day D is at D+1 00:00:
+                # then also create jobs for D+1, otherwise the last day before
+                # each gap is never processed.
+                job_days = set()
+                for job in jobs:
+                    d = job.day if isinstance(job.day, datetime.datetime) else \
+                        datetime.datetime.strptime(str(job.day), '%Y-%m-%d')
+                    job_days.add(d.strftime('%Y-%m-%d'))
+                    if any_subdaily:
+                        job_days.add((d + datetime.timedelta(days=1)).strftime('%Y-%m-%d'))
+                upsert_pair_jobs(db, pair, sorted(job_days),
                                  ['MWCS', 'WCT', 'STR'], flag='T')
             massive_update_job(db, jobs, "D")
 
